@@ -5,7 +5,7 @@ import urllib.request
 
 import pytest
 
-from myclaw.provider import OpenAICompatibleProvider
+from myclaw.providers.openai_compat import OpenAICompatibleProvider
 
 
 class FakeHTTPResponse:

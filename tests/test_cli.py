@@ -2,7 +2,7 @@ import subprocess
 import sys
 import os
 
-from myclaw.__main__ import load_env_file
+from myclaw.config.env import load_env_file
 
 
 def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):

@@ -1,16 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
 
-Message = dict[str, str]
-
-
-class Provider(Protocol):
-    model: str
-
-    async def complete(self, messages: list[Message]) -> str:
-        """Return the assistant's next message for the given conversation."""
+from myclaw.providers.base import LLMProvider, Message
 
 
 @dataclass(slots=True)
@@ -31,7 +23,7 @@ class RunResult:
 class Agent:
     """A minimal agent loop without tools or channel abstractions."""
 
-    def __init__(self, provider: Provider, config: AgentConfig | None = None) -> None:
+    def __init__(self, provider: LLMProvider, config: AgentConfig | None = None) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
         if self.config.max_turns < 1:

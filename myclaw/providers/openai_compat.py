@@ -5,29 +5,8 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Protocol
 
-Message = dict[str, str]
-
-
-class LLMProvider(Protocol):
-    model: str
-
-    async def complete(self, messages: list[Message]) -> str:
-        """Return an assistant response for the given messages."""
-
-
-@dataclass(slots=True)
-class FakeProvider:
-    prefix: str = "Echo"
-    model: str = "fake"
-
-    async def complete(self, messages: list[Message]) -> str:
-        last_user = next(
-            (message["content"] for message in reversed(messages) if message.get("role") == "user"),
-            "",
-        )
-        return f"{self.prefix}: {last_user}"
+from myclaw.providers.base import Message
 
 
 @dataclass(slots=True)
