@@ -2,22 +2,28 @@
 
 from myclaw.agent import (
     AgentConfig,
+    AgentDispatcher,
     AgentLoop,
     AgentRunResult,
     AgentRunner,
     AgentRunSpec,
     RunResult,
 )
+from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.providers import FakeProvider, LLMProvider, OpenAICompatibleProvider
 
 __all__ = [
     "AgentConfig",
+    "AgentDispatcher",
     "AgentLoop",
     "AgentRunResult",
     "AgentRunner",
     "AgentRunSpec",
     "FakeProvider",
+    "InboundMessage",
     "LLMProvider",
+    "MessageBus",
     "OpenAICompatibleProvider",
+    "OutboundMessage",
     "RunResult",
 ]

@@ -4,7 +4,8 @@ import argparse
 import asyncio
 import os
 
-from myclaw.agent import AgentConfig, AgentLoop
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
+from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config.env import load_env_file
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 
@@ -25,12 +26,29 @@ def build_agent_loop() -> AgentLoop:
     return AgentLoop(FakeProvider(), AgentConfig(model="fake"))
 
 
-async def run_once(loop: AgentLoop, text: str) -> None:
-    result = await loop.process(text)
-    print(result.content)
+def build_dispatcher() -> AgentDispatcher:
+    return AgentDispatcher(MessageBus(), build_agent_loop())
 
 
-async def run_interactive(loop: AgentLoop) -> None:
+async def dispatch_text(dispatcher: AgentDispatcher, text: str) -> OutboundMessage:
+    await dispatcher.bus.publish_inbound(
+        InboundMessage(
+            channel="cli",
+            sender_id="user",
+            chat_id="direct",
+            content=text,
+        )
+    )
+    await dispatcher.process_next()
+    return await dispatcher.bus.consume_outbound()
+
+
+async def run_once(dispatcher: AgentDispatcher, text: str) -> None:
+    outbound = await dispatch_text(dispatcher, text)
+    print(outbound.content)
+
+
+async def run_interactive(dispatcher: AgentDispatcher) -> None:
     while True:
         try:
             text = input("You: ")
@@ -41,8 +59,8 @@ async def run_interactive(loop: AgentLoop) -> None:
             return
         if not text.strip():
             continue
-        result = await loop.process(text)
-        print(f"Assistant: {result.content}")
+        outbound = await dispatch_text(dispatcher, text)
+        print(f"Assistant: {outbound.content}")
 
 
 async def async_main() -> None:
@@ -50,11 +68,11 @@ async def async_main() -> None:
     parser.add_argument("message", nargs="*", help="Message to send in one-shot mode.")
     args = parser.parse_args()
 
-    loop = build_agent_loop()
+    dispatcher = build_dispatcher()
     if args.message:
-        await run_once(loop, " ".join(args.message))
+        await run_once(dispatcher, " ".join(args.message))
     else:
-        await run_interactive(loop)
+        await run_interactive(dispatcher)
 
 
 def main() -> None:
