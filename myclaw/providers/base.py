@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-Message = dict[str, str]
+from myclaw.agent.types import Message
 
 
 class LLMProvider(Protocol):

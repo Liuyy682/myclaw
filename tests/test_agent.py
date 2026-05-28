@@ -2,13 +2,13 @@ import asyncio
 
 import pytest
 
-from myclaw import Agent, AgentConfig, FakeProvider
+from myclaw import AgentConfig, AgentLoop, FakeProvider
 
 
-def test_run_appends_user_and_assistant_messages_in_order():
-    agent = Agent(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
+def test_process_appends_user_and_assistant_messages_in_order():
+    loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
 
-    result = asyncio.run(agent.run("hello"))
+    result = asyncio.run(loop.process("hello"))
 
     assert result.content == "Echo: hello"
     assert result.model == "fake"
@@ -19,11 +19,11 @@ def test_run_appends_user_and_assistant_messages_in_order():
     ]
 
 
-def test_run_reuses_history_between_turns():
-    agent = Agent(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
+def test_process_reuses_history_between_turns():
+    loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
 
-    asyncio.run(agent.run("first"))
-    result = asyncio.run(agent.run("second"))
+    asyncio.run(loop.process("first"))
+    result = asyncio.run(loop.process("second"))
 
     assert result.content == "Echo: second"
     assert [message["content"] for message in result.messages] == [
@@ -35,11 +35,11 @@ def test_run_reuses_history_between_turns():
     ]
 
 
-def test_run_rejects_blank_input():
-    agent = Agent(FakeProvider())
+def test_process_rejects_blank_input():
+    loop = AgentLoop(FakeProvider())
 
     with pytest.raises(ValueError, match="empty"):
-        asyncio.run(agent.run("   "))
+        asyncio.run(loop.process("   "))
 
 
 class FailingProvider:
@@ -50,9 +50,9 @@ class FailingProvider:
 
 
 def test_provider_error_returns_clear_message_and_keeps_user_turn():
-    agent = Agent(FailingProvider())
+    loop = AgentLoop(FailingProvider())
 
-    result = asyncio.run(agent.run("please answer"))
+    result = asyncio.run(loop.process("please answer"))
 
     assert result.model == "broken"
     assert result.content == "Error: provider unavailable"
