@@ -11,6 +11,7 @@ from myclaw.agent import (
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.providers import FakeProvider, LLMProvider, OpenAICompatibleProvider
+from myclaw.session import Session, SessionManager
 
 __all__ = [
     "AgentConfig",
@@ -26,4 +27,6 @@ __all__ = [
     "OpenAICompatibleProvider",
     "OutboundMessage",
     "RunResult",
+    "Session",
+    "SessionManager",
 ]

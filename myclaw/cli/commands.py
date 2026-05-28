@@ -8,13 +8,22 @@ from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config.env import load_env_file
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
+from myclaw.session import SessionManager
 
 EXIT_COMMANDS = {"exit", "quit"}
+CLI_SESSION_KEY = "cli:direct"
 
 
 def build_agent_loop() -> AgentLoop:
     load_env_file()
+    session_manager = SessionManager()
+    session = session_manager.get_or_create(CLI_SESSION_KEY)
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    history = [
+        {"role": message["role"], "content": message["content"]}
+        for message in session.messages
+        if message.get("role") in {"user", "assistant"}
+    ]
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
         provider = OpenAICompatibleProvider(
@@ -22,8 +31,18 @@ def build_agent_loop() -> AgentLoop:
             base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             model=model,
         )
-        return AgentLoop(provider, AgentConfig(model=model))
-    return AgentLoop(FakeProvider(), AgentConfig(model="fake"))
+        return AgentLoop(
+            provider,
+            AgentConfig(model=model, history=history),
+            session=session,
+            session_manager=session_manager,
+        )
+    return AgentLoop(
+        FakeProvider(),
+        AgentConfig(model="fake", history=history),
+        session=session,
+        session_manager=session_manager,
+    )
 
 
 def build_dispatcher() -> AgentDispatcher:

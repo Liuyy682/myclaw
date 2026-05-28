@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from myclaw import AgentConfig, AgentLoop, FakeProvider
+from myclaw.session import SessionManager
 
 
 def test_process_appends_user_and_assistant_messages_in_order():
@@ -32,6 +33,25 @@ def test_process_reuses_history_between_turns():
         "Echo: first",
         "second",
         "Echo: second",
+    ]
+
+
+def test_process_persists_user_and_assistant_messages_to_session(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:direct")
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session=session,
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.process("hello"))
+
+    reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
+    assert reloaded.messages == [
+        {"role": "user", "content": "hello", "timestamp": reloaded.messages[0]["timestamp"]},
+        {"role": "assistant", "content": "Echo: hello", "timestamp": reloaded.messages[1]["timestamp"]},
     ]
 
 

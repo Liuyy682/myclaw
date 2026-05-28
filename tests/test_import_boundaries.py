@@ -7,6 +7,8 @@ def test_public_api_exports_stay_stable():
         FakeProvider,
         OpenAICompatibleProvider,
         RunResult,
+        Session,
+        SessionManager,
     )
 
     assert not hasattr(myclaw, "Agent")
@@ -16,6 +18,8 @@ def test_public_api_exports_stay_stable():
     assert FakeProvider.__name__ == "FakeProvider"
     assert OpenAICompatibleProvider.__name__ == "OpenAICompatibleProvider"
     assert RunResult.__name__ == "RunResult"
+    assert Session.__name__ == "Session"
+    assert SessionManager.__name__ == "SessionManager"
 
 
 def test_nanobot_style_internal_module_boundaries_are_available():
@@ -28,6 +32,7 @@ def test_nanobot_style_internal_module_boundaries_are_available():
     from myclaw.config.env import load_env_file
     from myclaw.providers.fake import FakeProvider
     from myclaw.providers.openai_compat import OpenAICompatibleProvider
+    from myclaw.session import Session, SessionManager
 
     assert AgentDispatcher.__name__ == "AgentDispatcher"
     assert AgentLoop.__name__ == "AgentLoop"
@@ -40,3 +45,5 @@ def test_nanobot_style_internal_module_boundaries_are_available():
     assert load_env_file.__name__ == "load_env_file"
     assert FakeProvider.__name__ == "FakeProvider"
     assert OpenAICompatibleProvider.__name__ == "OpenAICompatibleProvider"
+    assert Session.__name__ == "Session"
+    assert SessionManager.__name__ == "SessionManager"

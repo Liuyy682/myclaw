@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import json
 
 from myclaw.config.env import load_env_file
 
@@ -9,6 +10,7 @@ def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):
     env = os.environ.copy()
     env.pop("OPENAI_API_KEY", None)
     env["MYCLAW_ENV_FILE"] = str(tmp_path / "missing.env")
+    env["MYCLAW_WORKSPACE"] = str(tmp_path / "workspace")
 
     result = subprocess.run(
         [sys.executable, "-m", "myclaw", "hello"],
@@ -20,6 +22,44 @@ def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):
     )
 
     assert result.stdout.strip() == "Echo: hello"
+
+
+def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
+    env["MYCLAW_ENV_FILE"] = str(tmp_path / "missing.env")
+    env["MYCLAW_WORKSPACE"] = str(tmp_path / "workspace")
+
+    subprocess.run(
+        [sys.executable, "-m", "myclaw", "first"],
+        check=True,
+        cwd="/root/myclaw",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "myclaw", "second"],
+        check=True,
+        cwd="/root/myclaw",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    session_file = tmp_path / "workspace" / "sessions" / "cli_direct.jsonl"
+    messages = [
+        json.loads(line)
+        for line in session_file.read_text(encoding="utf-8").splitlines()
+        if line and json.loads(line).get("_type") != "metadata"
+    ]
+
+    assert [message["content"] for message in messages] == [
+        "first",
+        "Echo: first",
+        "second",
+        "Echo: second",
+    ]
 
 
 def test_load_env_file_reads_project_env_without_overwriting_existing_values(tmp_path, monkeypatch):
