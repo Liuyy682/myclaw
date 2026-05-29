@@ -30,7 +30,7 @@ class AgentLoop:
     def messages(self) -> list[Message]:
         return [dict(message) for message in self._messages]
 
-    async def process(self, text: str) -> RunResult:
+    async def run(self, text: str) -> RunResult:
         user_text = text.strip()
         if not user_text:
             raise ValueError("user input cannot be empty")

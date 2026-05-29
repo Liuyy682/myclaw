@@ -7,10 +7,10 @@ from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
 
 
-def test_process_appends_user_and_assistant_messages_in_order():
+def test_run_appends_user_and_assistant_messages_in_order():
     loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
 
-    result = asyncio.run(loop.process("hello"))
+    result = asyncio.run(loop.run("hello"))
 
     assert result.content == "Echo: hello"
     assert result.model == "fake"
@@ -21,11 +21,11 @@ def test_process_appends_user_and_assistant_messages_in_order():
     ]
 
 
-def test_process_reuses_history_between_turns():
+def test_run_reuses_history_between_turns():
     loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt="You are helpful."))
 
-    asyncio.run(loop.process("first"))
-    result = asyncio.run(loop.process("second"))
+    asyncio.run(loop.run("first"))
+    result = asyncio.run(loop.run("second"))
 
     assert result.content == "Echo: second"
     assert [message["content"] for message in result.messages] == [
@@ -49,12 +49,12 @@ class CapturingProvider:
         return f"Echo: {last_user}"
 
 
-def test_process_sends_previous_turn_history_to_provider():
+def test_run_sends_previous_turn_history_to_provider():
     provider = CapturingProvider()
     loop = AgentLoop(provider, AgentConfig(system_prompt="You are helpful."))
 
-    asyncio.run(loop.process("first"))
-    asyncio.run(loop.process("second"))
+    asyncio.run(loop.run("first"))
+    asyncio.run(loop.run("second"))
 
     assert provider.calls[1] == [
         {"role": "system", "content": "You are helpful."},
@@ -64,7 +64,7 @@ def test_process_sends_previous_turn_history_to_provider():
     ]
 
 
-def test_process_loads_persisted_history_for_new_loop(tmp_path):
+def test_run_loads_persisted_history_for_new_loop(tmp_path):
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("cli:direct")
     session.add_message("user", "persisted")
@@ -83,7 +83,7 @@ def test_process_loads_persisted_history_for_new_loop(tmp_path):
         session_manager=manager,
     )
 
-    asyncio.run(loop.process("next"))
+    asyncio.run(loop.run("next"))
 
     assert provider.calls[0] == [
         {"role": "user", "content": "persisted"},
@@ -105,7 +105,7 @@ class MultiAssistantProvider:
         return LLMResponse(content="final", final=True)
 
 
-def test_process_persists_all_assistant_messages_from_internal_iterations(tmp_path):
+def test_run_persists_all_assistant_messages_from_internal_iterations(tmp_path):
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("cli:direct")
     loop = AgentLoop(
@@ -115,14 +115,14 @@ def test_process_persists_all_assistant_messages_from_internal_iterations(tmp_pa
         session_manager=manager,
     )
 
-    result = asyncio.run(loop.process("work"))
+    result = asyncio.run(loop.run("work"))
 
     assert [message["content"] for message in result.messages] == ["work", "draft", "final"]
     reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
     assert [message["content"] for message in reloaded.messages] == ["work", "draft", "final"]
 
 
-def test_process_persists_user_and_assistant_messages_to_session(tmp_path):
+def test_run_persists_user_and_assistant_messages_to_session(tmp_path):
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("cli:direct")
     loop = AgentLoop(
@@ -132,7 +132,7 @@ def test_process_persists_user_and_assistant_messages_to_session(tmp_path):
         session_manager=manager,
     )
 
-    asyncio.run(loop.process("hello"))
+    asyncio.run(loop.run("hello"))
 
     reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
     assert reloaded.messages == [
@@ -141,11 +141,11 @@ def test_process_persists_user_and_assistant_messages_to_session(tmp_path):
     ]
 
 
-def test_process_rejects_blank_input():
+def test_run_rejects_blank_input():
     loop = AgentLoop(FakeProvider())
 
     with pytest.raises(ValueError, match="empty"):
-        asyncio.run(loop.process("   "))
+        asyncio.run(loop.run("   "))
 
 
 class FailingProvider:
@@ -158,7 +158,7 @@ class FailingProvider:
 def test_provider_error_returns_clear_message_and_keeps_user_turn():
     loop = AgentLoop(FailingProvider())
 
-    result = asyncio.run(loop.process("please answer"))
+    result = asyncio.run(loop.run("please answer"))
 
     assert result.model == "broken"
     assert result.content == "Error: provider unavailable"

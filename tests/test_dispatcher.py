@@ -1,40 +1,128 @@
 import asyncio
+import contextlib
 
 from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider
 from myclaw.bus import InboundMessage, MessageBus
 
 
-def test_dispatcher_processes_inbound_and_publishes_outbound():
+async def _stop(task):
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+def test_dispatcher_run_processes_inbound_and_publishes_outbound():
     bus = MessageBus()
     loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt=""))
     dispatcher = AgentDispatcher(bus, loop)
 
-    asyncio.run(bus.publish_inbound(
-        InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
-    ))
-    asyncio.run(dispatcher.process_next())
-    outbound = asyncio.run(bus.consume_outbound())
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
 
     assert outbound.channel == "cli"
     assert outbound.chat_id == "direct"
     assert outbound.content == "Echo: hello"
 
 
+class BlockingLoop:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = []
+
+    async def run(self, text):
+        self.calls.append(text)
+        self.started.set()
+        await self.release.wait()
+        return type("Result", (), {"content": f"done: {text}"})()
+
+
+def test_dispatcher_run_queues_new_inbound_while_current_message_is_running():
+    bus = MessageBus()
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="one")
+        )
+        await loop.started.wait()
+
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="two")
+        )
+        queued_size = bus.inbound_size
+
+        loop.release.set()
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        await _stop(task)
+        return queued_size, first, second, list(loop.calls)
+
+    queued_size, first, second, calls = asyncio.run(scenario())
+
+    assert queued_size == 1
+    assert calls == ["one", "two"]
+    assert first.content == "done: one"
+    assert second.content == "done: two"
+
+
 class BrokenLoop:
-    async def process(self, text):
-        raise RuntimeError("loop unavailable")
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, text):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("loop unavailable")
+        return type("Result", (), {"content": f"recovered: {text}"})()
 
 
-def test_dispatcher_turns_loop_errors_into_outbound_message():
+def test_dispatcher_run_turns_loop_errors_into_outbound_message_and_continues():
     bus = MessageBus()
     dispatcher = AgentDispatcher(bus, BrokenLoop())
 
-    asyncio.run(bus.publish_inbound(
-        InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
-    ))
-    asyncio.run(dispatcher.process_next())
-    outbound = asyncio.run(bus.consume_outbound())
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="again")
+        )
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        await _stop(task)
+        return first, second
 
-    assert outbound.channel == "cli"
-    assert outbound.chat_id == "direct"
-    assert outbound.content == "Error: loop unavailable"
+    first, second = asyncio.run(scenario())
+
+    assert first.channel == "cli"
+    assert first.chat_id == "direct"
+    assert first.content == "Error: loop unavailable"
+    assert second.content == "recovered: again"
+
+
+def test_dispatcher_run_can_be_cancelled_while_waiting_for_inbound():
+    bus = MessageBus()
+    loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt=""))
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return task.cancelled()
+
+    assert asyncio.run(scenario()) is True

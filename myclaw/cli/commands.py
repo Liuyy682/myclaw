@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
@@ -58,8 +59,13 @@ async def dispatch_text(dispatcher: AgentDispatcher, text: str) -> OutboundMessa
             content=text,
         )
     )
-    await dispatcher.process_next()
-    return await dispatcher.bus.consume_outbound()
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        return await dispatcher.bus.consume_outbound()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def run_once(dispatcher: AgentDispatcher, text: str) -> None:

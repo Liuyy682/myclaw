@@ -5,24 +5,25 @@ from myclaw.bus import MessageBus, OutboundMessage
 
 
 class AgentDispatcher:
-    """Bridge one inbound bus message to one outbound agent response."""
+    """Continuously bridge inbound bus messages to outbound agent responses."""
 
     def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
         self.bus = bus
         self.loop = loop
 
-    async def process_next(self) -> None:
-        msg = await self.bus.consume_inbound()
-        try:
-            result = await self.loop.process(msg.content)
-            content = result.content
-        except Exception as exc:
-            content = f"Error: {exc}"
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=content,
-                metadata=dict(msg.metadata),
+    async def run(self) -> None:
+        while True:
+            msg = await self.bus.consume_inbound()
+            try:
+                result = await self.loop.run(msg.content)
+                content = result.content
+            except Exception as exc:
+                content = f"Error: {exc}"
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=content,
+                    metadata=dict(msg.metadata),
+                )
             )
-        )
