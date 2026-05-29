@@ -97,15 +97,24 @@ class BlockingLoop:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls = []
+        self.running_sessions = set()
+        self.overlaps = []
 
     async def run(self, text, *, session_key):
-        self.calls.append((text, session_key))
-        self.started.set()
-        await self.release.wait()
-        return type("Result", (), {"content": f"done: {text}"})()
+        if session_key in self.running_sessions:
+            self.overlaps.append((text, session_key))
+        self.running_sessions.add(session_key)
+        try:
+            self.calls.append((text, session_key))
+            if text == "one":
+                self.started.set()
+                await self.release.wait()
+            return type("Result", (), {"content": f"done: {text}"})()
+        finally:
+            self.running_sessions.remove(session_key)
 
 
-def test_dispatcher_run_queues_new_inbound_while_current_message_is_running():
+def test_dispatcher_run_serializes_messages_with_same_session_key():
     bus = MessageBus()
     loop = BlockingLoop()
     dispatcher = AgentDispatcher(bus, loop)
@@ -120,20 +129,67 @@ def test_dispatcher_run_queues_new_inbound_while_current_message_is_running():
         await bus.publish_inbound(
             InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="two")
         )
-        queued_size = bus.inbound_size
+        await asyncio.sleep(0)
+        calls_while_blocked = list(loop.calls)
 
         loop.release.set()
         first = await bus.consume_outbound()
         second = await bus.consume_outbound()
         await _stop(task)
-        return queued_size, first, second, list(loop.calls)
+        return calls_while_blocked, first, second, list(loop.calls), list(loop.overlaps)
 
-    queued_size, first, second, calls = asyncio.run(scenario())
+    calls_while_blocked, first, second, calls, overlaps = asyncio.run(scenario())
 
-    assert queued_size == 1
+    assert calls_while_blocked == [("one", "cli:direct")]
     assert calls == [("one", "cli:direct"), ("two", "cli:direct")]
+    assert overlaps == []
     assert first.content == "done: one"
     assert second.content == "done: two"
+
+
+class CrossSessionBlockingLoop:
+    def __init__(self):
+        self.calls = []
+        self.started_sessions = set()
+        self.both_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self, text, *, session_key):
+        self.calls.append((text, session_key))
+        self.started_sessions.add(session_key)
+        if len(self.started_sessions) == 2:
+            self.both_started.set()
+        await self.release.wait()
+        return type("Result", (), {"content": f"{session_key}: {text}"})()
+
+
+def test_dispatcher_run_allows_different_sessions_to_run_concurrently():
+    bus = MessageBus()
+    loop = CrossSessionBlockingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="one", content="first")
+        )
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="two", content="second")
+        )
+
+        await asyncio.wait_for(loop.both_started.wait(), timeout=0.5)
+        calls_while_blocked = list(loop.calls)
+
+        loop.release.set()
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        await _stop(task)
+        return calls_while_blocked, {first.content, second.content}
+
+    calls_while_blocked, contents = asyncio.run(scenario())
+
+    assert calls_while_blocked == [("first", "cli:one"), ("second", "cli:two")]
+    assert contents == {"cli:one: first", "cli:two: second"}
 
 
 class BrokenLoop:
@@ -190,3 +246,46 @@ def test_dispatcher_run_can_be_cancelled_while_waiting_for_inbound(tmp_path):
         return task.cancelled()
 
     assert asyncio.run(scenario()) is True
+
+
+class CancellableLoop:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, text, *, session_key):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
+def test_dispatcher_run_cancels_active_workers_on_shutdown():
+    bus = MessageBus()
+    loop = CancellableLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        await loop.started.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return (
+            task.cancelled(),
+            loop.cancelled.is_set(),
+            set(dispatcher._active_tasks),
+            dict(dispatcher._session_states),
+        )
+
+    cancelled, worker_cancelled, active_tasks, session_states = asyncio.run(scenario())
+
+    assert cancelled is True
+    assert worker_cancelled is True
+    assert active_tasks == set()
+    assert session_states == {}
