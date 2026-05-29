@@ -4,12 +4,14 @@ import argparse
 import asyncio
 import contextlib
 import os
+from pathlib import Path
 
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config.env import load_env_file
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.session import SessionManager
+from myclaw.tools import build_default_tool_registry
 
 EXIT_COMMANDS = {"exit", "quit"}
 CLI_SESSION_KEY = "cli:direct"
@@ -18,6 +20,7 @@ CLI_SESSION_KEY = "cli:direct"
 def build_agent_loop() -> AgentLoop:
     load_env_file()
     session_manager = SessionManager()
+    tool_registry = build_default_tool_registry(Path.cwd())
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
@@ -30,11 +33,13 @@ def build_agent_loop() -> AgentLoop:
             provider,
             AgentConfig(model=model),
             session_manager=session_manager,
+            tool_registry=tool_registry,
         )
     return AgentLoop(
         FakeProvider(),
         AgentConfig(model="fake"),
         session_manager=session_manager,
+        tool_registry=tool_registry,
     )
 
 

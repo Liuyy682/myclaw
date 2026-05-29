@@ -2,7 +2,15 @@ import asyncio
 
 import pytest
 
-from myclaw import AgentConfig, AgentLoop, FakeProvider, FunctionTool, ToolCallRequest, ToolRegistry
+from myclaw import (
+    AgentConfig,
+    AgentLoop,
+    FakeProvider,
+    FunctionTool,
+    ToolCallRequest,
+    ToolRegistry,
+    build_default_tool_registry,
+)
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
 
@@ -244,3 +252,41 @@ def test_run_executes_tool_loop_and_persists_only_final_assistant_message(tmp_pa
         "what is 2 + 3?",
         "sum is 5",
     ]
+
+
+class BuiltinReadFileProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append([dict(message) for message in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_read", name="read_file", arguments={"path": "note.txt"})],
+            )
+        assert messages[-1]["role"] == "tool"
+        assert messages[-1]["content"] == "1|hello from file"
+        return LLMResponse(content="read complete", final=True)
+
+
+def test_run_executes_builtin_read_file_tool(tmp_path):
+    (tmp_path / "note.txt").write_text("hello from file\n", encoding="utf-8")
+    manager = SessionManager(tmp_path / "sessions")
+    provider = BuiltinReadFileProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=build_default_tool_registry(tmp_path),
+    )
+
+    result = asyncio.run(loop.run("read note", session_key=SESSION_KEY))
+
+    assert result.content == "read complete"
+    reloaded = SessionManager(tmp_path / "sessions").get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["read note", "read complete"]

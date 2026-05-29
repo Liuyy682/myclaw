@@ -7,13 +7,17 @@ def test_public_api_exports_stay_stable():
         FakeProvider,
         FunctionTool,
         LLMResponse,
+        ListDirTool,
         OpenAICompatibleProvider,
+        ReadFileTool,
         RunResult,
         Session,
         SessionManager,
         Tool,
         ToolCallRequest,
         ToolRegistry,
+        WriteFileTool,
+        build_default_tool_registry,
     )
 
     assert not hasattr(myclaw, "Agent")
@@ -22,14 +26,18 @@ def test_public_api_exports_stay_stable():
     assert AgentRunner.__name__ == "AgentRunner"
     assert FakeProvider.__name__ == "FakeProvider"
     assert FunctionTool.__name__ == "FunctionTool"
+    assert ListDirTool.__name__ == "ListDirTool"
     assert LLMResponse.__name__ == "LLMResponse"
     assert OpenAICompatibleProvider.__name__ == "OpenAICompatibleProvider"
+    assert ReadFileTool.__name__ == "ReadFileTool"
     assert RunResult.__name__ == "RunResult"
     assert Session.__name__ == "Session"
     assert SessionManager.__name__ == "SessionManager"
     assert Tool.__name__ == "Tool"
     assert ToolCallRequest.__name__ == "ToolCallRequest"
     assert ToolRegistry.__name__ == "ToolRegistry"
+    assert WriteFileTool.__name__ == "WriteFileTool"
+    assert build_default_tool_registry.__name__ == "build_default_tool_registry"
 
 
 def test_nanobot_style_internal_module_boundaries_are_available():
@@ -44,7 +52,16 @@ def test_nanobot_style_internal_module_boundaries_are_available():
     from myclaw.providers.fake import FakeProvider
     from myclaw.providers.openai_compat import OpenAICompatibleProvider
     from myclaw.session import Session, SessionManager
-    from myclaw.tools import FunctionTool, Tool, ToolCallRequest, ToolRegistry
+    from myclaw.tools import (
+        FunctionTool,
+        ListDirTool,
+        ReadFileTool,
+        Tool,
+        ToolCallRequest,
+        ToolRegistry,
+        WriteFileTool,
+        build_default_tool_registry,
+    )
 
     assert AgentDispatcher.__name__ == "AgentDispatcher"
     assert AgentLoop.__name__ == "AgentLoop"
@@ -58,9 +75,13 @@ def test_nanobot_style_internal_module_boundaries_are_available():
     assert LLMResponse.__name__ == "LLMResponse"
     assert FakeProvider.__name__ == "FakeProvider"
     assert FunctionTool.__name__ == "FunctionTool"
+    assert ListDirTool.__name__ == "ListDirTool"
     assert OpenAICompatibleProvider.__name__ == "OpenAICompatibleProvider"
+    assert ReadFileTool.__name__ == "ReadFileTool"
     assert Session.__name__ == "Session"
     assert SessionManager.__name__ == "SessionManager"
     assert Tool.__name__ == "Tool"
     assert ToolCallRequest.__name__ == "ToolCallRequest"
     assert ToolRegistry.__name__ == "ToolRegistry"
+    assert WriteFileTool.__name__ == "WriteFileTool"
+    assert build_default_tool_registry.__name__ == "build_default_tool_registry"

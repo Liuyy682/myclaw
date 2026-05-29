@@ -3,6 +3,7 @@ import sys
 import os
 import json
 
+from myclaw.cli.commands import build_agent_loop
 from myclaw.config.env import load_env_file
 
 
@@ -92,6 +93,22 @@ def test_cli_interactive_persists_two_turns(tmp_path):
         "Echo: first",
         "second",
         "Echo: second",
+    ]
+
+
+def test_build_agent_loop_registers_default_file_tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+
+    loop = build_agent_loop()
+
+    assert loop.tool_registry is not None
+    assert [definition["function"]["name"] for definition in loop.tool_registry.definitions()] == [
+        "list_dir",
+        "read_file",
+        "write_file",
     ]
 
 
