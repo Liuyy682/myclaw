@@ -1,6 +1,6 @@
 import asyncio
 
-from myclaw import AgentRunSpec, AgentRunner, FakeProvider, LLMResponse
+from myclaw import AgentRunSpec, AgentRunner, FakeProvider, FunctionTool, LLMResponse, ToolCallRequest, ToolRegistry
 
 
 def test_runner_returns_assistant_message_for_single_model_call():
@@ -31,7 +31,7 @@ class MultiStepProvider:
             LLMResponse(content="done", final=True),
         ]
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         self.calls.append([dict(message) for message in messages])
         return self.responses[len(self.calls) - 1]
 
@@ -65,7 +65,7 @@ class NeverFinalProvider:
     def __init__(self):
         self.calls = 0
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         self.calls += 1
         return LLMResponse(content=f"step {self.calls}", final=False, stop_reason="continue")
 
@@ -92,8 +92,144 @@ def test_runner_stops_at_max_iterations():
 class FailingProvider:
     model = "broken"
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         raise RuntimeError("provider unavailable")
+
+
+class ToolCallingProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
+            )
+        return LLMResponse(content=f"sum is {messages[-1]['content']}", final=True)
+
+
+def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
+    registry = ToolRegistry()
+    registry.register(
+        FunctionTool(
+            "add",
+            "Add two numbers",
+            {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}},
+            lambda a, b: a + b,
+        )
+    )
+    provider = ToolCallingProvider()
+    runner = AgentRunner(provider)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "add 2 and 3"}],
+        model="tools",
+        max_iterations=3,
+        tools=registry,
+    )))
+
+    assert result.content == "sum is 5"
+    assert result.stop_reason == "completed"
+    assert result.messages == [{"role": "assistant", "content": "sum is 5"}]
+    assert provider.calls[0]["tools"] == registry.definitions()
+    assert provider.calls[1]["messages"] == [
+        {"role": "user", "content": "add 2 and 3"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "arguments": '{"a": 2, "b": 3}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+    ]
+
+
+class MultipleToolCallProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append([dict(message) for message in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[
+                    ToolCallRequest(id="call_add", name="add", arguments={"a": 1, "b": 2}),
+                    ToolCallRequest(id="call_double", name="double", arguments={"value": 4}),
+                ],
+            )
+        tool_results = [message["content"] for message in messages if message["role"] == "tool"]
+        return LLMResponse(content=", ".join(tool_results), final=True)
+
+
+def test_runner_executes_multiple_tool_calls_before_follow_up_model_call():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    provider = MultipleToolCallProvider()
+    runner = AgentRunner(provider)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "use tools"}],
+        model="tools",
+        max_iterations=3,
+        tools=registry,
+    )))
+
+    assert result.content == "3, 8"
+    assert [message["content"] for message in provider.calls[1] if message["role"] == "tool"] == ["3", "8"]
+
+
+class NeverFinalToolProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        return LLMResponse(
+            content="",
+            final=False,
+            stop_reason="tool_calls",
+            tool_calls=[ToolCallRequest(id=f"call_{self.calls}", name="noop", arguments={})],
+        )
+
+
+def test_runner_stops_tool_loop_at_max_iterations():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("noop", "No-op", {"type": "object"}, lambda: "ok"))
+    provider = NeverFinalToolProvider()
+    runner = AgentRunner(provider)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "loop"}],
+        model="tools",
+        max_iterations=2,
+        tools=registry,
+    )))
+
+    assert provider.calls == 2
+    assert result.stop_reason == "max_iterations"
+    assert result.messages == []
 
 
 def test_runner_returns_error_state_when_provider_fails():

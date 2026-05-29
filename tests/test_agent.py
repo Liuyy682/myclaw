@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from myclaw import AgentConfig, AgentLoop, FakeProvider
+from myclaw import AgentConfig, AgentLoop, FakeProvider, FunctionTool, ToolCallRequest, ToolRegistry
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
 
@@ -33,7 +33,7 @@ class CapturingProvider:
     def __init__(self):
         self.calls = []
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         self.calls.append([dict(message) for message in messages])
         last_user = next(message["content"] for message in reversed(messages) if message["role"] == "user")
         return f"Echo: {last_user}"
@@ -111,7 +111,7 @@ class MultiAssistantProvider:
     def __init__(self):
         self.calls = 0
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         self.calls += 1
         if self.calls == 1:
             return LLMResponse(content="draft", final=False, stop_reason="continue")
@@ -160,7 +160,7 @@ def test_run_rejects_blank_input(tmp_path):
 class FailingProvider:
     model = "broken"
 
-    async def complete(self, messages):
+    async def complete(self, messages, *, tools=None):
         raise RuntimeError("provider unavailable")
 
 
@@ -181,4 +181,66 @@ def test_provider_error_returns_clear_message_and_keeps_user_turn(tmp_path):
     assert [message["content"] for message in reloaded.messages] == [
         "please answer",
         "Error: provider unavailable",
+    ]
+
+
+class ToolLoopProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append([dict(message) for message in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
+            )
+        return LLMResponse(content="sum is 5", final=True)
+
+
+def test_run_executes_tool_loop_and_persists_only_final_assistant_message(tmp_path):
+    manager = SessionManager(tmp_path)
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    provider = ToolLoopProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+
+    result = asyncio.run(loop.run("what is 2 + 3?", session_key=SESSION_KEY))
+
+    assert result.content == "sum is 5"
+    assert result.messages == [
+        {"role": "user", "content": "what is 2 + 3?"},
+        {"role": "assistant", "content": "sum is 5"},
+    ]
+    assert provider.calls[1] == [
+        {"role": "user", "content": "what is 2 + 3?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "arguments": '{"a": 2, "b": 3}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+    ]
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == [
+        "what is 2 + 3?",
+        "sum is 5",
     ]

@@ -4,6 +4,7 @@ from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, RunResult
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager
+from myclaw.tools import ToolRegistry
 
 
 class AgentLoop:
@@ -15,6 +16,7 @@ class AgentLoop:
         config: AgentConfig | None = None,
         *,
         session_manager: SessionManager,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -22,6 +24,7 @@ class AgentLoop:
             raise ValueError("max_turns must be at least 1")
         self.runner = AgentRunner(provider)
         self.session_manager = session_manager
+        self.tool_registry = tool_registry
 
     async def run(self, text: str, *, session_key: str) -> RunResult:
         user_text = text.strip()
@@ -36,6 +39,7 @@ class AgentLoop:
                 messages=messages,
                 model=self.config.model or self.provider.model,
                 max_iterations=self.config.max_turns,
+                tools=self.tool_registry,
             )
         )
         self._persist_turn(session, user_text, result.messages)

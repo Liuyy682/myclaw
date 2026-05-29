@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-Message = dict[str, str]
+if TYPE_CHECKING:
+    from myclaw.tools import ToolRegistry
+
+Message = dict[str, Any]
 
 
 @dataclass(slots=True)
 class AgentConfig:
     system_prompt: str = "You are a helpful personal assistant."
     model: str = ""
-    max_turns: int = 1
+    max_turns: int = 4
     history: list[Message] = field(default_factory=list)
 
 
@@ -24,7 +28,8 @@ class RunResult:
 class AgentRunSpec:
     messages: list[Message]
     model: str
-    max_iterations: int = 1
+    max_iterations: int = 4
+    tools: ToolRegistry | None = None
 
 
 @dataclass(slots=True)

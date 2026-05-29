@@ -12,6 +12,7 @@ from myclaw.agent import (
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, OpenAICompatibleProvider
 from myclaw.session import Session, SessionManager
+from myclaw.tools import FunctionTool, Tool, ToolCallRequest, ToolRegistry
 
 __all__ = [
     "AgentConfig",
@@ -21,6 +22,7 @@ __all__ = [
     "AgentRunner",
     "AgentRunSpec",
     "FakeProvider",
+    "FunctionTool",
     "InboundMessage",
     "LLMProvider",
     "LLMResponse",
@@ -30,4 +32,7 @@ __all__ = [
     "RunResult",
     "Session",
     "SessionManager",
+    "Tool",
+    "ToolCallRequest",
+    "ToolRegistry",
 ]

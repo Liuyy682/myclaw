@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from myclaw.agent.types import AgentRunResult, AgentRunSpec, Message
 from myclaw.providers.base import LLMProvider, LLMResponse
+from myclaw.tools import ToolCallRequest, ToolRegistry
 
 
 class AgentRunner:
@@ -16,7 +17,10 @@ class AgentRunner:
 
         for _ in range(spec.max_iterations):
             try:
-                response = await self.provider.complete([dict(message) for message in working_messages])
+                response = await self.provider.complete(
+                    [dict(message) for message in working_messages],
+                    tools=self._tool_definitions(spec.tools),
+                )
             except Exception as exc:
                 error = str(exc)
                 assistant_text = f"Error: {error}"
@@ -28,6 +32,16 @@ class AgentRunner:
                 )
 
             llm_response = self._normalize_response(response)
+            if llm_response.should_execute_tools:
+                working_messages.append(
+                    self._assistant_tool_call_message(llm_response.content, llm_response.tool_calls)
+                )
+                registry = spec.tools or ToolRegistry()
+                for tool_call in llm_response.tool_calls:
+                    tool_result = await registry.execute(tool_call)
+                    working_messages.append(self._tool_message(tool_call, tool_result))
+                continue
+
             assistant_message = self._assistant_message(llm_response.content)
             generated.append(assistant_message)
             working_messages.append(assistant_message)
@@ -50,8 +64,39 @@ class AgentRunner:
         return {"role": "assistant", "content": content}
 
     @staticmethod
+    def _assistant_tool_call_message(content: str, tool_calls: list[ToolCallRequest]) -> Message:
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [tool_call.to_openai_tool_call() for tool_call in tool_calls],
+        }
+
+    @staticmethod
+    def _tool_message(tool_call: ToolCallRequest, content: str) -> Message:
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "name": tool_call.name,
+            "content": content,
+        }
+
+    @staticmethod
+    def _tool_definitions(registry: ToolRegistry | None) -> list[dict] | None:
+        if registry is None or len(registry) == 0:
+            return None
+        return registry.definitions()
+
+    @staticmethod
     def _normalize_response(response: str | LLMResponse) -> LLMResponse:
         if isinstance(response, LLMResponse):
+            if response.tool_calls:
+                content = response.content.strip()
+                return LLMResponse(
+                    content=content,
+                    final=False,
+                    stop_reason=response.stop_reason if response.stop_reason else "tool_calls",
+                    tool_calls=list(response.tool_calls),
+                )
             content = response.content.strip() if response.content.strip() else "(empty response)"
             return LLMResponse(
                 content=content,

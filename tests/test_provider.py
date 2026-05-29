@@ -5,6 +5,7 @@ import urllib.request
 
 import pytest
 
+from myclaw import LLMResponse, ToolCallRequest
 from myclaw.providers.openai_compat import OpenAICompatibleProvider
 
 
@@ -50,6 +51,100 @@ def test_openai_compatible_provider_builds_chat_completion_request(monkeypatch):
         "model": "demo-model",
         "messages": [{"role": "user", "content": "hello"}],
     }
+
+
+def test_openai_compatible_provider_includes_tools_when_supplied(monkeypatch):
+    captured = {}
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "add",
+                "description": "Add two numbers",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeHTTPResponse({"choices": [{"message": {"content": "hello back"}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+
+    content = asyncio.run(provider.complete([{"role": "user", "content": "hello"}], tools=tools))
+
+    assert content == "hello back"
+    assert captured["body"]["tools"] == tools
+
+
+def test_openai_compatible_provider_parses_tool_call_response(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_add",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "add",
+                                        "arguments": '{"a": 2, "b": 3}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+
+    response = asyncio.run(provider.complete([{"role": "user", "content": "add"}], tools=[]))
+
+    assert isinstance(response, LLMResponse)
+    assert response.content == ""
+    assert response.final is False
+    assert response.stop_reason == "tool_calls"
+    assert response.tool_calls == [
+        ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3}),
+    ]
+
+
+def test_openai_compatible_provider_rejects_invalid_tool_arguments(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_bad",
+                                    "type": "function",
+                                    "function": {"name": "add", "arguments": "{bad json"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+
+    with pytest.raises(RuntimeError, match="tool call arguments were not valid JSON"):
+        asyncio.run(provider.complete([{"role": "user", "content": "add"}], tools=[]))
 
 
 def test_openai_compatible_provider_raises_readable_http_errors(monkeypatch):
