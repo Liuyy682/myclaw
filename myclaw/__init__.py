@@ -10,7 +10,7 @@ from myclaw.agent import (
     RunResult,
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
-from myclaw.providers import FakeProvider, LLMProvider, OpenAICompatibleProvider
+from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, OpenAICompatibleProvider
 from myclaw.session import Session, SessionManager
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "FakeProvider",
     "InboundMessage",
     "LLMProvider",
+    "LLMResponse",
     "MessageBus",
     "OpenAICompatibleProvider",
     "OutboundMessage",

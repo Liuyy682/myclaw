@@ -62,6 +62,39 @@ def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
     ]
 
 
+def test_cli_interactive_persists_two_turns(tmp_path):
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
+    env["MYCLAW_ENV_FILE"] = str(tmp_path / "missing.env")
+    env["MYCLAW_WORKSPACE"] = str(tmp_path / "workspace")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "myclaw"],
+        input="first\nsecond\nexit\n",
+        check=True,
+        cwd="/root/myclaw",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Assistant: Echo: first" in result.stdout
+    assert "Assistant: Echo: second" in result.stdout
+
+    session_file = tmp_path / "workspace" / "sessions" / "cli_direct.jsonl"
+    messages = [
+        json.loads(line)
+        for line in session_file.read_text(encoding="utf-8").splitlines()
+        if line and json.loads(line).get("_type") != "metadata"
+    ]
+    assert [message["content"] for message in messages] == [
+        "first",
+        "Echo: first",
+        "second",
+        "Echo: second",
+    ]
+
+
 def test_load_env_file_reads_project_env_without_overwriting_existing_values(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(
