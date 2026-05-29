@@ -15,7 +15,7 @@ class AgentDispatcher:
         while True:
             msg = await self.bus.consume_inbound()
             try:
-                result = await self.loop.run(msg.content)
+                result = await self.loop.run(msg.content, session_key=msg.session_key)
                 content = result.content
             except Exception as exc:
                 content = f"Error: {exc}"

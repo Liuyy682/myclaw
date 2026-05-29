@@ -3,6 +3,7 @@ import contextlib
 
 from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider
 from myclaw.bus import InboundMessage, MessageBus
+from myclaw.session import SessionManager
 
 
 async def _stop(task):
@@ -11,9 +12,13 @@ async def _stop(task):
         await task
 
 
-def test_dispatcher_run_processes_inbound_and_publishes_outbound():
+def test_dispatcher_run_processes_inbound_and_publishes_outbound(tmp_path):
     bus = MessageBus()
-    loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt=""))
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
     dispatcher = AgentDispatcher(bus, loop)
 
     async def scenario():
@@ -32,14 +37,69 @@ def test_dispatcher_run_processes_inbound_and_publishes_outbound():
     assert outbound.content == "Echo: hello"
 
 
+class CapturingLoop:
+    def __init__(self):
+        self.calls = []
+
+    async def run(self, text, *, session_key):
+        self.calls.append((text, session_key))
+        return type("Result", (), {"content": f"{session_key}: {text}"})()
+
+
+def test_dispatcher_run_passes_message_session_key_to_loop():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
+
+    assert loop.calls == [("hello", "cli:direct")]
+    assert outbound.content == "cli:direct: hello"
+
+
+def test_dispatcher_run_respects_session_key_override():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="cli",
+                sender_id="user",
+                chat_id="direct",
+                content="hello",
+                session_key_override="shared:session",
+            )
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
+
+    assert loop.calls == [("hello", "shared:session")]
+    assert outbound.content == "shared:session: hello"
+
+
 class BlockingLoop:
     def __init__(self):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls = []
 
-    async def run(self, text):
-        self.calls.append(text)
+    async def run(self, text, *, session_key):
+        self.calls.append((text, session_key))
         self.started.set()
         await self.release.wait()
         return type("Result", (), {"content": f"done: {text}"})()
@@ -71,7 +131,7 @@ def test_dispatcher_run_queues_new_inbound_while_current_message_is_running():
     queued_size, first, second, calls = asyncio.run(scenario())
 
     assert queued_size == 1
-    assert calls == ["one", "two"]
+    assert calls == [("one", "cli:direct"), ("two", "cli:direct")]
     assert first.content == "done: one"
     assert second.content == "done: two"
 
@@ -80,7 +140,7 @@ class BrokenLoop:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, text):
+    async def run(self, text, *, session_key):
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("loop unavailable")
@@ -112,9 +172,13 @@ def test_dispatcher_run_turns_loop_errors_into_outbound_message_and_continues():
     assert second.content == "recovered: again"
 
 
-def test_dispatcher_run_can_be_cancelled_while_waiting_for_inbound():
+def test_dispatcher_run_can_be_cancelled_while_waiting_for_inbound(tmp_path):
     bus = MessageBus()
-    loop = AgentLoop(FakeProvider(prefix="Echo"), AgentConfig(system_prompt=""))
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
     dispatcher = AgentDispatcher(bus, loop)
 
     async def scenario():
