@@ -8,6 +8,7 @@ from myclaw.agent import (
     AgentRunResult,
     AgentRunner,
     AgentRunSpec,
+    ProgressCallback,
     RunResult,
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
@@ -41,6 +42,7 @@ __all__ = [
     "MessageBus",
     "OpenAICompatibleProvider",
     "OutboundMessage",
+    "ProgressCallback",
     "ReadFileTool",
     "RunResult",
     "Session",

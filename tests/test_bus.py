@@ -31,6 +31,28 @@ def test_bus_publish_and_consume_outbound_in_order():
     assert bus.outbound_size == 0
 
 
+def test_outbound_message_marks_terminal_messages_by_default():
+    msg = OutboundMessage(channel="cli", chat_id="direct", content="done")
+
+    assert msg.terminal is True
+    assert msg.event_type == "message"
+
+
+def test_outbound_message_can_represent_non_terminal_progress():
+    msg = OutboundMessage(
+        channel="cli",
+        chat_id="direct",
+        content="Running tool add (1/1)",
+        terminal=False,
+        event_type="tool_progress",
+        metadata={"progress": {"event": "tool_started", "tool_name": "add"}},
+    )
+
+    assert msg.terminal is False
+    assert msg.event_type == "tool_progress"
+    assert msg.metadata["progress"]["event"] == "tool_started"
+
+
 def test_inbound_message_session_key_uses_default_or_override():
     msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
     override = InboundMessage(

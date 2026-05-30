@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 Message = dict[str, Any]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -34,6 +35,7 @@ class AgentRunSpec:
     max_iterations: int = 4
     tools: ToolRegistry | None = None
     checkpoint_callback: CheckpointCallback | None = None
+    progress_callback: ProgressCallback | None = None
 
 
 @dataclass(slots=True)

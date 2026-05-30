@@ -346,6 +346,33 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     assert reloaded.metadata == {}
 
 
+def test_run_forwards_tool_progress_without_persisting_progress_events(tmp_path):
+    manager = SessionManager(tmp_path)
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    provider = ToolLoopProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+    progress = []
+
+    async def record_progress(payload):
+        progress.append(payload)
+
+    asyncio.run(loop.run("what is 2 + 3?", session_key=SESSION_KEY, progress_callback=record_progress))
+
+    assert [(event["event"], event["tool_name"], event["tool_call_id"]) for event in progress] == [
+        ("tool_started", "add", "call_add"),
+        ("tool_completed", "add", "call_add"),
+    ]
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["role"] for message in reloaded.messages] == ["user", "assistant", "tool", "assistant"]
+    assert reloaded.metadata == {}
+
+
 class PartialToolProvider:
     model = "tools"
 

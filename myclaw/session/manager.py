@@ -61,6 +61,11 @@ class SessionManager:
         self._cache[key] = session
         return session
 
+    def reset(self, key: str) -> Session:
+        session = Session(key=key)
+        self.save(session)
+        return session
+
     def save(self, session: Session) -> None:
         path = self._get_session_path(session.key)
         tmp_path = path.with_suffix(".jsonl.tmp")

@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 
-from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider
+from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider, FunctionTool, ToolCallRequest, ToolRegistry
 from myclaw.bus import InboundMessage, MessageBus
+from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
 
 
@@ -41,7 +42,7 @@ class CapturingLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, text, *, session_key):
+    async def run(self, text, *, session_key, progress_callback=None):
         self.calls.append((text, session_key))
         return type("Result", (), {"content": f"{session_key}: {text}"})()
 
@@ -100,7 +101,7 @@ class BlockingLoop:
         self.running_sessions = set()
         self.overlaps = []
 
-    async def run(self, text, *, session_key):
+    async def run(self, text, *, session_key, progress_callback=None):
         if session_key in self.running_sessions:
             self.overlaps.append((text, session_key))
         self.running_sessions.add(session_key)
@@ -154,7 +155,7 @@ class CrossSessionBlockingLoop:
         self.both_started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run(self, text, *, session_key):
+    async def run(self, text, *, session_key, progress_callback=None):
         self.calls.append((text, session_key))
         self.started_sessions.add(session_key)
         if len(self.started_sessions) == 2:
@@ -196,7 +197,7 @@ class BrokenLoop:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, text, *, session_key):
+    async def run(self, text, *, session_key, progress_callback=None):
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("loop unavailable")
@@ -228,6 +229,187 @@ def test_dispatcher_run_turns_loop_errors_into_outbound_message_and_continues():
     assert second.content == "recovered: again"
 
 
+def test_dispatcher_status_reports_running_and_queued_messages():
+    bus = MessageBus()
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="one")
+        )
+        await loop.started.wait()
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="two")
+        )
+        await asyncio.sleep(0)
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/status")
+        )
+        status = await bus.consume_outbound()
+        loop.release.set()
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        await _stop(task)
+        return status, first, second
+
+    status, first, second = asyncio.run(scenario())
+
+    assert status.content == "Status: running with 1 queued."
+    assert status.event_type == "control"
+    assert status.terminal is True
+    assert first.content == "done: one"
+    assert second.content == "done: two"
+
+
+def test_dispatcher_stop_cancels_active_session_task_without_final_message():
+    bus = MessageBus()
+    loop = CancellableLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        await loop.started.wait()
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/stop")
+        )
+        outbound = await bus.consume_outbound()
+        active = dict(dispatcher._active_session_tasks)
+        states = dict(dispatcher._session_states)
+        await _stop(task)
+        return outbound, loop.cancelled.is_set(), active, states, bus.outbound_size
+
+    outbound, worker_cancelled, active, states, outbound_size = asyncio.run(scenario())
+
+    assert outbound.content == "Stopped current turn."
+    assert outbound.event_type == "control"
+    assert outbound.terminal is True
+    assert worker_cancelled is True
+    assert active == {}
+    assert states == {}
+    assert outbound_size == 0
+
+
+def test_dispatcher_new_resets_idle_session_history(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:direct")
+    session.add_message("user", "old")
+    session.metadata["pending_user_turn"] = True
+    manager.save(session)
+    bus = MessageBus()
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+    )
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/new")
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
+    reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
+
+    assert outbound.content == "Started a new session."
+    assert outbound.event_type == "control"
+    assert outbound.terminal is True
+    assert reloaded.key == "cli:direct"
+    assert reloaded.messages == []
+    assert reloaded.metadata == {}
+
+
+def test_dispatcher_new_refuses_to_reset_active_session():
+    bus = MessageBus()
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="one")
+        )
+        await loop.started.wait()
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/new")
+        )
+        outbound = await bus.consume_outbound()
+        loop.release.set()
+        final = await bus.consume_outbound()
+        await _stop(task)
+        return outbound, final
+
+    outbound, final = asyncio.run(scenario())
+
+    assert outbound.content == "Cannot start a new session while a turn is running. Use /stop first."
+    assert outbound.event_type == "control"
+    assert final.content == "done: one"
+
+
+class OneToolProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
+            )
+        return LLMResponse(content="done", final=True)
+
+
+def test_dispatcher_forwards_tool_progress_as_non_terminal_outbound_messages(tmp_path):
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    bus = MessageBus()
+    loop = AgentLoop(
+        OneToolProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+        tool_registry=registry,
+    )
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="use tool")
+        )
+        started = await bus.consume_outbound()
+        completed = await bus.consume_outbound()
+        final = await bus.consume_outbound()
+        await _stop(task)
+        return started, completed, final
+
+    started, completed, final = asyncio.run(scenario())
+
+    assert started.terminal is False
+    assert started.event_type == "tool_progress"
+    assert started.content == "Running tool add (1/1)"
+    assert started.metadata["progress"]["event"] == "tool_started"
+    assert completed.terminal is False
+    assert completed.event_type == "tool_progress"
+    assert completed.content == "Finished tool add (1/1)"
+    assert completed.metadata["progress"]["event"] == "tool_completed"
+    assert final.terminal is True
+    assert final.content == "done"
+
+
 def test_dispatcher_run_can_be_cancelled_while_waiting_for_inbound(tmp_path):
     bus = MessageBus()
     loop = AgentLoop(
@@ -253,7 +435,7 @@ class CancellableLoop:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def run(self, text, *, session_key):
+    async def run(self, text, *, session_key, progress_callback=None):
         self.started.set()
         try:
             await asyncio.Event().wait()

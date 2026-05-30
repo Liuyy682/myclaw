@@ -52,7 +52,23 @@ class AgentRunner:
                 )
                 registry = spec.tools or ToolRegistry()
                 for index, tool_call in enumerate(llm_response.tool_calls):
+                    await self._emit_progress(
+                        spec,
+                        event="tool_started",
+                        iteration=iteration,
+                        tool_call=tool_call,
+                        index=index + 1,
+                        total=len(llm_response.tool_calls),
+                    )
                     tool_result = await registry.execute(tool_call)
+                    await self._emit_progress(
+                        spec,
+                        event="tool_completed",
+                        iteration=iteration,
+                        tool_call=tool_call,
+                        index=index + 1,
+                        total=len(llm_response.tool_calls),
+                    )
                     tool_message = self._tool_message(tool_call, tool_result)
                     generated.append(tool_message)
                     working_messages.append(tool_message)
@@ -131,6 +147,29 @@ class AgentRunner:
                 "iteration": iteration,
                 "messages": [dict(message) for message in messages],
                 "pending_tool_calls": [dict(tool_call) for tool_call in pending_tool_calls],
+            }
+        )
+
+    @staticmethod
+    async def _emit_progress(
+        spec: AgentRunSpec,
+        *,
+        event: str,
+        iteration: int,
+        tool_call: ToolCallRequest,
+        index: int,
+        total: int,
+    ) -> None:
+        if spec.progress_callback is None:
+            return
+        await spec.progress_callback(
+            {
+                "event": event,
+                "iteration": iteration,
+                "tool_call_id": tool_call.id,
+                "tool_name": tool_call.name,
+                "index": index,
+                "total": total,
             }
         )
 

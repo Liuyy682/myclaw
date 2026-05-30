@@ -58,7 +58,10 @@ async def dispatch_text(dispatcher: AgentDispatcher, text: str) -> OutboundMessa
     )
     task = asyncio.create_task(dispatcher.run())
     try:
-        return await dispatcher.bus.consume_outbound()
+        while True:
+            outbound = await dispatcher.bus.consume_outbound()
+            if outbound.terminal:
+                return outbound
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -71,18 +74,62 @@ async def run_once(dispatcher: AgentDispatcher, text: str) -> None:
 
 
 async def run_interactive(dispatcher: AgentDispatcher) -> None:
+    pending = {"count": 0, "changed": asyncio.Event()}
+    dispatcher_task = asyncio.create_task(dispatcher.run())
+    output_task = asyncio.create_task(_print_interactive_output(dispatcher, pending))
+    try:
+        while True:
+            try:
+                text = await asyncio.to_thread(input, "You: ")
+            except EOFError:
+                print()
+                await _wait_for_pending_output(pending)
+                return
+            if text.strip().lower() in EXIT_COMMANDS:
+                await _wait_for_pending_output(pending)
+                return
+            if not text.strip():
+                continue
+            pending["count"] += 1
+            pending["changed"].clear()
+            await dispatcher.bus.publish_inbound(
+                InboundMessage(
+                    channel="cli",
+                    sender_id="user",
+                    chat_id="direct",
+                    content=text,
+                )
+            )
+            await asyncio.sleep(0)
+    finally:
+        for task in (output_task, dispatcher_task):
+            task.cancel()
+        for task in (output_task, dispatcher_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def _print_interactive_output(dispatcher: AgentDispatcher, pending: dict) -> None:
     while True:
+        outbound = await dispatcher.bus.consume_outbound()
+        if outbound.event_type == "control":
+            print(outbound.content)
+        elif outbound.event_type == "tool_progress":
+            print(f"Progress: {outbound.content}")
+        else:
+            print(f"Assistant: {outbound.content}")
+        if outbound.terminal:
+            pending["count"] = max(0, pending["count"] - 1)
+            pending["changed"].set()
+
+
+async def _wait_for_pending_output(pending: dict, timeout: float = 0.2) -> None:
+    while pending["count"] > 0:
+        pending["changed"].clear()
         try:
-            text = input("You: ")
-        except EOFError:
-            print()
+            await asyncio.wait_for(pending["changed"].wait(), timeout=timeout)
+        except asyncio.TimeoutError:
             return
-        if text.strip().lower() in EXIT_COMMANDS:
-            return
-        if not text.strip():
-            continue
-        outbound = await dispatch_text(dispatcher, text)
-        print(f"Assistant: {outbound.content}")
 
 
 async def async_main() -> None:

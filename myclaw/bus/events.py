@@ -31,3 +31,5 @@ class OutboundMessage:
     content: str
     reply_to: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    terminal: bool = True
+    event_type: str = "message"

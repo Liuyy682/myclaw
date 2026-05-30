@@ -61,6 +61,24 @@ def test_get_or_create_loads_existing_history(tmp_path):
     assert reloaded.key == "cli:direct"
 
 
+def test_reset_clears_history_and_metadata_but_keeps_key(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:direct")
+    session.add_message("user", "hello")
+    session.metadata["runtime_checkpoint"] = {"phase": "awaiting_tools"}
+    manager.save(session)
+
+    reset = manager.reset("cli:direct")
+
+    assert reset.key == "cli:direct"
+    assert reset.messages == []
+    assert reset.metadata == {}
+    reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
+    assert reloaded.key == "cli:direct"
+    assert reloaded.messages == []
+    assert reloaded.metadata == {}
+
+
 def test_session_key_maps_to_safe_filename(tmp_path):
     manager = SessionManager(tmp_path)
     session = Session(key="cli:direct")

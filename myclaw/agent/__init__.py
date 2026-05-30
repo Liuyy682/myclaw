@@ -2,7 +2,7 @@ from myclaw.agent.context import ContextBuilder
 from myclaw.agent.dispatcher import AgentDispatcher
 from myclaw.agent.loop import AgentLoop
 from myclaw.agent.runner import AgentRunner
-from myclaw.agent.types import AgentConfig, AgentRunResult, AgentRunSpec, Message, RunResult
+from myclaw.agent.types import AgentConfig, AgentRunResult, AgentRunSpec, Message, ProgressCallback, RunResult
 
 __all__ = [
     "AgentConfig",
@@ -13,5 +13,6 @@ __all__ = [
     "AgentRunResult",
     "AgentRunSpec",
     "Message",
+    "ProgressCallback",
     "RunResult",
 ]

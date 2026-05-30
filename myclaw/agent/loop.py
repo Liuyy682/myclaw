@@ -5,7 +5,7 @@ from typing import Any
 
 from myclaw.agent.context import ContextBuilder
 from myclaw.agent.runner import AgentRunner
-from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, RunResult
+from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import ToolRegistry
@@ -38,7 +38,13 @@ class AgentLoop:
         self.session_manager = session_manager
         self.tool_registry = tool_registry
 
-    async def run(self, text: str, *, session_key: str) -> RunResult:
+    async def run(
+        self,
+        text: str,
+        *,
+        session_key: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> RunResult:
         user_text = text.strip()
         if not user_text:
             raise ValueError("user input cannot be empty")
@@ -56,6 +62,7 @@ class AgentLoop:
                 max_iterations=self.config.max_turns,
                 tools=self.tool_registry,
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
+                progress_callback=progress_callback,
             )
         )
         self._persist_turn(session, result.messages)
@@ -68,6 +75,9 @@ class AgentLoop:
             messages=run_messages,
             model=self.config.model or self.provider.model,
         )
+
+    def reset_session(self, session_key: str) -> None:
+        self.session_manager.reset(session_key)
 
     def _messages_for_run(self, session: Session, user_text: str) -> list[Message]:
         return self.context_builder.build_messages(self.config, session.messages, user_text)

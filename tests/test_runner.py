@@ -247,6 +247,39 @@ def test_runner_emits_tool_progress_checkpoints():
     assert checkpoints[2]["pending_tool_calls"] == []
 
 
+def test_runner_emits_tool_progress_callbacks_around_each_tool_call():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    provider = MultipleToolCallProvider()
+    runner = AgentRunner(provider)
+    progress = []
+
+    async def record_progress(payload):
+        progress.append(payload)
+
+    asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "use tools"}],
+        model="tools",
+        max_iterations=3,
+        tools=registry,
+        progress_callback=record_progress,
+    )))
+
+    assert [(event["event"], event["tool_name"], event["index"], event["total"]) for event in progress] == [
+        ("tool_started", "add", 1, 2),
+        ("tool_completed", "add", 1, 2),
+        ("tool_started", "double", 2, 2),
+        ("tool_completed", "double", 2, 2),
+    ]
+    assert [event["tool_call_id"] for event in progress] == [
+        "call_add",
+        "call_add",
+        "call_double",
+        "call_double",
+    ]
+
+
 class NeverFinalToolProvider:
     model = "tools"
 

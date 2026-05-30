@@ -1,9 +1,11 @@
+import asyncio
 import subprocess
 import sys
 import os
 import json
 
-from myclaw.cli.commands import build_agent_loop
+from myclaw.bus import MessageBus, OutboundMessage
+from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file
 
 
@@ -61,6 +63,68 @@ def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
         "second",
         "Echo: second",
     ]
+
+
+class ProgressThenFinalDispatcher:
+    def __init__(self):
+        self.bus = MessageBus()
+
+    async def run(self):
+        await self.bus.consume_inbound()
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="cli",
+                chat_id="direct",
+                content="Running tool add (1/1)",
+                terminal=False,
+                event_type="tool_progress",
+            )
+        )
+        await self.bus.publish_outbound(
+            OutboundMessage(channel="cli", chat_id="direct", content="final answer")
+        )
+        await asyncio.Event().wait()
+
+
+def test_dispatch_text_waits_for_terminal_outbound_message():
+    dispatcher = ProgressThenFinalDispatcher()
+
+    outbound = asyncio.run(dispatch_text(dispatcher, "hello"))
+
+    assert outbound.content == "final answer"
+    assert outbound.terminal is True
+
+
+class RecordingDispatcher:
+    def __init__(self):
+        self.bus = MessageBus()
+        self.run_calls = 0
+        self.received = []
+
+    async def run(self):
+        self.run_calls += 1
+        while True:
+            msg = await self.bus.consume_inbound()
+            self.received.append(msg.content)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"ack: {msg.content}",
+                    event_type="control" if msg.content.startswith("/") else "message",
+                )
+            )
+
+
+def test_interactive_cli_keeps_one_dispatcher_running_for_multiple_inputs(monkeypatch):
+    dispatcher = RecordingDispatcher()
+    inputs = iter(["hello", "/status", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    asyncio.run(run_interactive(dispatcher))
+
+    assert dispatcher.run_calls == 1
+    assert dispatcher.received == ["hello", "/status"]
 
 
 def test_cli_interactive_persists_two_turns(tmp_path):
