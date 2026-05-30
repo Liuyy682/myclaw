@@ -215,6 +215,38 @@ def test_runner_executes_multiple_tool_calls_before_follow_up_model_call():
     assert [message["content"] for message in provider.calls[1] if message["role"] == "tool"] == ["3", "8"]
 
 
+def test_runner_emits_tool_progress_checkpoints():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    provider = MultipleToolCallProvider()
+    runner = AgentRunner(provider)
+    checkpoints = []
+
+    async def record_checkpoint(payload):
+        checkpoints.append(payload)
+
+    asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "use tools"}],
+        model="tools",
+        max_iterations=3,
+        tools=registry,
+        checkpoint_callback=record_checkpoint,
+    )))
+
+    assert [checkpoint["phase"] for checkpoint in checkpoints] == [
+        "awaiting_tools",
+        "tools_in_progress",
+        "tools_completed",
+    ]
+    assert [message["role"] for message in checkpoints[0]["messages"]] == ["assistant"]
+    assert [call["id"] for call in checkpoints[0]["pending_tool_calls"]] == ["call_add", "call_double"]
+    assert [message["role"] for message in checkpoints[1]["messages"]] == ["assistant", "tool"]
+    assert [call["id"] for call in checkpoints[1]["pending_tool_calls"]] == ["call_double"]
+    assert [message["role"] for message in checkpoints[2]["messages"]] == ["assistant", "tool", "tool"]
+    assert checkpoints[2]["pending_tool_calls"] == []
+
+
 class NeverFinalToolProvider:
     model = "tools"
 

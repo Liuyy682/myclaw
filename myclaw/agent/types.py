@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -7,6 +8,7 @@ if TYPE_CHECKING:
     from myclaw.tools import ToolRegistry
 
 Message = dict[str, Any]
+CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -31,6 +33,7 @@ class AgentRunSpec:
     model: str
     max_iterations: int = 4
     tools: ToolRegistry | None = None
+    checkpoint_callback: CheckpointCallback | None = None
 
 
 @dataclass(slots=True)

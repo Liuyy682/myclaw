@@ -192,6 +192,52 @@ def test_provider_error_returns_clear_message_and_keeps_user_turn(tmp_path):
     ]
 
 
+class CancellingRunner:
+    async def run(self, spec):
+        raise asyncio.CancelledError()
+
+
+def test_run_restores_pending_user_turn_after_interruption(tmp_path):
+    manager = SessionManager(tmp_path)
+    interrupted_loop = AgentLoop(
+        FakeProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+    )
+    interrupted_loop.runner = CancellingRunner()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(interrupted_loop.run("interrupted", session_key=SESSION_KEY))
+
+    interrupted = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in interrupted.messages] == ["interrupted"]
+    assert interrupted.metadata["pending_user_turn"] is True
+    assert "runtime_checkpoint" not in interrupted.metadata
+
+    provider = CapturingProvider()
+    recovery_loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(recovery_loop.run("next", session_key=SESSION_KEY))
+
+    assert provider.calls[0] == [
+        {"role": "user", "content": "interrupted"},
+        {"role": "assistant", "content": "Error: Task interrupted before a response was generated."},
+        {"role": "user", "content": "next"},
+    ]
+    recovered = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in recovered.messages] == [
+        "interrupted",
+        "Error: Task interrupted before a response was generated.",
+        "next",
+        "Echo: next",
+    ]
+    assert recovered.metadata == {}
+
+
 class ToolLoopProvider:
     model = "tools"
 
@@ -297,6 +343,104 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
             "timestamp": reloaded.messages[3]["timestamp"],
         },
     ]
+    assert reloaded.metadata == {}
+
+
+class PartialToolProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append([dict(message) for message in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[
+                    ToolCallRequest(id="call_first", name="first", arguments={}),
+                    ToolCallRequest(id="call_second", name="second", arguments={}),
+                ],
+            )
+        return LLMResponse(content="done", final=True)
+
+
+async def _cancelled_tool():
+    raise asyncio.CancelledError()
+
+
+def test_run_restores_runtime_checkpoint_with_pending_tool_result(tmp_path):
+    registry = ToolRegistry()
+    registry.register(FunctionTool("first", "First", {"type": "object"}, lambda: "first ok"))
+    registry.register(FunctionTool("second", "Second", {"type": "object"}, _cancelled_tool))
+    manager = SessionManager(tmp_path)
+    interrupted_loop = AgentLoop(
+        PartialToolProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(interrupted_loop.run("use tools", session_key=SESSION_KEY))
+
+    interrupted = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in interrupted.messages] == ["use tools"]
+    assert interrupted.metadata["pending_user_turn"] is True
+    checkpoint = interrupted.metadata["runtime_checkpoint"]
+    assert checkpoint["phase"] == "tools_in_progress"
+    assert [message["role"] for message in checkpoint["messages"]] == ["assistant", "tool"]
+    assert checkpoint["messages"][1]["content"] == "first ok"
+    assert [call["id"] for call in checkpoint["pending_tool_calls"]] == ["call_second"]
+
+    provider = CapturingProvider()
+    recovery_loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(recovery_loop.run("next", session_key=SESSION_KEY))
+
+    assert provider.calls[0] == [
+        {"role": "user", "content": "use tools"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_first",
+                    "type": "function",
+                    "function": {"name": "first", "arguments": "{}"},
+                },
+                {
+                    "id": "call_second",
+                    "type": "function",
+                    "function": {"name": "second", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "content": "first ok", "tool_call_id": "call_first", "name": "first"},
+        {
+            "role": "tool",
+            "content": "Error: Task interrupted before this tool finished.",
+            "tool_call_id": "call_second",
+            "name": "second",
+        },
+        {"role": "user", "content": "next"},
+    ]
+    recovered = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["role"] for message in recovered.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    assert recovered.metadata == {}
 
 
 class BuiltinReadFileProvider:

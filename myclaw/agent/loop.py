@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+
 from myclaw.agent.context import ContextBuilder
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, RunResult
@@ -10,6 +13,11 @@ from myclaw.tools import ToolRegistry
 
 class AgentLoop:
     """Run one user turn against the session selected by the inbound message."""
+
+    _PENDING_USER_TURN_KEY = "pending_user_turn"
+    _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
+    _PENDING_USER_ERROR = "Error: Task interrupted before a response was generated."
+    _PENDING_TOOL_ERROR = "Error: Task interrupted before this tool finished."
 
     def __init__(
         self,
@@ -36,7 +44,10 @@ class AgentLoop:
             raise ValueError("user input cannot be empty")
 
         session = self.session_manager.get_or_create(session_key)
+        if self._restore_incomplete_turn(session):
+            self.session_manager.save(session)
         messages = self._messages_for_run(session, user_text)
+        self._mark_pending_user_turn(session, user_text)
 
         result = await self.runner.run(
             AgentRunSpec(
@@ -44,9 +55,13 @@ class AgentLoop:
                 model=self.config.model or self.provider.model,
                 max_iterations=self.config.max_turns,
                 tools=self.tool_registry,
+                checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
             )
         )
-        self._persist_turn(session, user_text, result.messages)
+        self._persist_turn(session, result.messages)
+        self._clear_pending_user_turn(session)
+        self._clear_runtime_checkpoint(session)
+        self.session_manager.save(session)
         run_messages = messages + [dict(message) for message in result.messages]
         return RunResult(
             content=result.content,
@@ -57,8 +72,7 @@ class AgentLoop:
     def _messages_for_run(self, session: Session, user_text: str) -> list[Message]:
         return self.context_builder.build_messages(self.config, session.messages, user_text)
 
-    def _persist_turn(self, session: Session, user_text: str, assistant_messages: list[Message]) -> None:
-        session.add_message("user", user_text)
+    def _persist_turn(self, session: Session, assistant_messages: list[Message]) -> None:
         for message in assistant_messages:
             role = message.get("role")
             content = message.get("content", "")
@@ -72,4 +86,128 @@ class AgentLoop:
                 if key in message
             }
             session.add_message(role, content, **fields)
+
+    def _mark_pending_user_turn(self, session: Session, user_text: str) -> None:
+        session.add_message("user", user_text)
+        session.metadata[self._PENDING_USER_TURN_KEY] = True
         self.session_manager.save(session)
+
+    async def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
+        session.metadata[self._RUNTIME_CHECKPOINT_KEY] = dict(payload)
+        self.session_manager.save(session)
+
+    def _clear_pending_user_turn(self, session: Session) -> None:
+        session.metadata.pop(self._PENDING_USER_TURN_KEY, None)
+
+    def _clear_runtime_checkpoint(self, session: Session) -> None:
+        session.metadata.pop(self._RUNTIME_CHECKPOINT_KEY, None)
+
+    def _restore_incomplete_turn(self, session: Session) -> bool:
+        if self._restore_runtime_checkpoint(session):
+            return True
+        return self._restore_pending_user_turn(session)
+
+    def _restore_pending_user_turn(self, session: Session) -> bool:
+        if not session.metadata.get(self._PENDING_USER_TURN_KEY):
+            return False
+        if session.messages and session.messages[-1].get("role") == "user":
+            session.add_message("assistant", self._PENDING_USER_ERROR)
+        else:
+            session.updated_at = datetime.now()
+        self._clear_pending_user_turn(session)
+        return True
+
+    def _restore_runtime_checkpoint(self, session: Session) -> bool:
+        checkpoint = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
+        if not isinstance(checkpoint, dict):
+            return False
+
+        restored_messages = self._checkpoint_messages(checkpoint)
+        overlap = self._checkpoint_overlap(session.messages, restored_messages)
+        session.messages.extend(restored_messages[overlap:])
+        session.updated_at = datetime.now()
+        self._clear_pending_user_turn(session)
+        self._clear_runtime_checkpoint(session)
+        return True
+
+    def _checkpoint_messages(self, checkpoint: dict[str, Any]) -> list[Message]:
+        restored: list[Message] = []
+        raw_messages = checkpoint.get("messages") or []
+        if isinstance(raw_messages, list):
+            for message in raw_messages:
+                restored_message = self._restorable_checkpoint_message(message)
+                if restored_message is not None:
+                    restored.append(restored_message)
+
+        fulfilled = {
+            str(message["tool_call_id"])
+            for message in restored
+            if message.get("role") == "tool" and message.get("tool_call_id")
+        }
+        raw_pending = checkpoint.get("pending_tool_calls") or []
+        if isinstance(raw_pending, list):
+            for tool_call in raw_pending:
+                message = self._pending_tool_message(tool_call, fulfilled)
+                if message is not None:
+                    restored.append(message)
+        return restored
+
+    @staticmethod
+    def _restorable_checkpoint_message(message: Any) -> Message | None:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"assistant", "tool"} or not isinstance(content, str):
+            return None
+        restored: Message = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
+        for key in ("tool_calls", "tool_call_id", "name"):
+            if key in message:
+                restored[key] = message[key]
+        return restored
+
+    def _pending_tool_message(self, tool_call: Any, fulfilled: set[str]) -> Message | None:
+        if not isinstance(tool_call, dict):
+            return None
+        tool_call_id = tool_call.get("id")
+        if not isinstance(tool_call_id, str) or not tool_call_id or tool_call_id in fulfilled:
+            return None
+        function = tool_call.get("function")
+        name = "tool"
+        if isinstance(function, dict) and isinstance(function.get("name"), str) and function["name"]:
+            name = function["name"]
+        fulfilled.add(tool_call_id)
+        return {
+            "role": "tool",
+            "content": self._PENDING_TOOL_ERROR,
+            "timestamp": datetime.now().isoformat(),
+            "tool_call_id": tool_call_id,
+            "name": name,
+        }
+
+    @classmethod
+    def _checkpoint_overlap(cls, existing: list[Message], restored: list[Message]) -> int:
+        max_overlap = min(len(existing), len(restored))
+        for size in range(max_overlap, 0, -1):
+            left = existing[-size:]
+            right = restored[:size]
+            if all(
+                cls._checkpoint_message_key(candidate) == cls._checkpoint_message_key(restored_message)
+                for candidate, restored_message in zip(left, right)
+            ):
+                return size
+        return 0
+
+    @staticmethod
+    def _checkpoint_message_key(message: Message) -> tuple[Any, ...]:
+        return (
+            message.get("role"),
+            message.get("content"),
+            message.get("tool_call_id"),
+            message.get("name"),
+            message.get("tool_calls"),
+        )

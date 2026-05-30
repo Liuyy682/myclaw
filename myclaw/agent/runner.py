@@ -16,7 +16,7 @@ class AgentRunner:
         generated: list[Message] = []
         last_assistant_content = ""
 
-        for _ in range(spec.max_iterations):
+        for iteration in range(spec.max_iterations):
             try:
                 response = await self.provider.complete(
                     [dict(message) for message in working_messages],
@@ -40,12 +40,33 @@ class AgentRunner:
                 )
                 generated.append(assistant_message)
                 working_messages.append(assistant_message)
+                await self._emit_checkpoint(
+                    spec,
+                    phase="awaiting_tools",
+                    iteration=iteration,
+                    messages=generated,
+                    pending_tool_calls=[
+                        tool_call.to_openai_tool_call()
+                        for tool_call in llm_response.tool_calls
+                    ],
+                )
                 registry = spec.tools or ToolRegistry()
-                for tool_call in llm_response.tool_calls:
+                for index, tool_call in enumerate(llm_response.tool_calls):
                     tool_result = await registry.execute(tool_call)
                     tool_message = self._tool_message(tool_call, tool_result)
                     generated.append(tool_message)
                     working_messages.append(tool_message)
+                    pending_tool_calls = [
+                        pending.to_openai_tool_call()
+                        for pending in llm_response.tool_calls[index + 1:]
+                    ]
+                    await self._emit_checkpoint(
+                        spec,
+                        phase="tools_completed" if not pending_tool_calls else "tools_in_progress",
+                        iteration=iteration,
+                        messages=generated,
+                        pending_tool_calls=pending_tool_calls,
+                    )
                 continue
 
             assistant_message = self._assistant_message(llm_response.content)
@@ -92,6 +113,26 @@ class AgentRunner:
         if registry is None or len(registry) == 0:
             return None
         return registry.definitions()
+
+    @staticmethod
+    async def _emit_checkpoint(
+        spec: AgentRunSpec,
+        *,
+        phase: str,
+        iteration: int,
+        messages: list[Message],
+        pending_tool_calls: list[dict],
+    ) -> None:
+        if spec.checkpoint_callback is None:
+            return
+        await spec.checkpoint_callback(
+            {
+                "phase": phase,
+                "iteration": iteration,
+                "messages": [dict(message) for message in messages],
+                "pending_tool_calls": [dict(tool_call) for tool_call in pending_tool_calls],
+            }
+        )
 
     @staticmethod
     def _normalize_response(response: str | LLMResponse) -> LLMResponse:
