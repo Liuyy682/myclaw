@@ -1,4 +1,5 @@
 import asyncio
+import re
 import subprocess
 import sys
 import os
@@ -7,6 +8,7 @@ import json
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file
+from myclaw.session import SessionManager
 
 
 def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):
@@ -65,6 +67,25 @@ def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
     ]
 
 
+def test_cli_single_turn_accepts_session_option(tmp_path):
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
+    env["MYCLAW_ENV_FILE"] = str(tmp_path / "missing.env")
+    env["MYCLAW_WORKSPACE"] = str(tmp_path / "workspace")
+
+    subprocess.run(
+        [sys.executable, "-m", "myclaw", "--session", "work", "hello"],
+        check=True,
+        cwd="/root/myclaw",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (tmp_path / "workspace" / "sessions" / "cli_work.jsonl").exists()
+    assert not (tmp_path / "workspace" / "sessions" / "cli_direct.jsonl").exists()
+
+
 class ProgressThenFinalDispatcher:
     def __init__(self):
         self.bus = MessageBus()
@@ -96,8 +117,9 @@ def test_dispatch_text_waits_for_terminal_outbound_message():
 
 
 class RecordingDispatcher:
-    def __init__(self):
+    def __init__(self, session_manager=None):
         self.bus = MessageBus()
+        self.loop = type("Loop", (), {"session_manager": session_manager})()
         self.run_calls = 0
         self.received = []
 
@@ -105,7 +127,7 @@ class RecordingDispatcher:
         self.run_calls += 1
         while True:
             msg = await self.bus.consume_inbound()
-            self.received.append(msg.content)
+            self.received.append((msg.chat_id, msg.content))
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
@@ -121,10 +143,74 @@ def test_interactive_cli_keeps_one_dispatcher_running_for_multiple_inputs(monkey
     inputs = iter(["hello", "/status", "exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
-    asyncio.run(run_interactive(dispatcher))
+    asyncio.run(run_interactive(dispatcher, session_name="direct"))
 
     assert dispatcher.run_calls == 1
-    assert dispatcher.received == ["hello", "/status"]
+    assert dispatcher.received == [("direct", "hello"), ("direct", "/status")]
+
+
+def test_interactive_cli_resume_switches_sessions_and_prompt_labels(tmp_path, monkeypatch):
+    manager = SessionManager(tmp_path)
+    dispatcher = RecordingDispatcher(manager)
+    inputs = iter(["/resume work", "hello", "/resume direct", "again", "exit"])
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    asyncio.run(run_interactive(dispatcher, session_name="direct"))
+
+    assert dispatcher.received == [("work", "hello"), ("direct", "again")]
+    assert prompts == [
+        "You[direct]: ",
+        "You[work]: ",
+        "You[work]: ",
+        "You[direct]: ",
+        "You[direct]: ",
+    ]
+
+
+def test_interactive_cli_resume_lists_sessions_with_titles(tmp_path, monkeypatch, capsys):
+    manager = SessionManager(tmp_path)
+    direct = manager.get_or_create("cli:direct")
+    direct.metadata["title"] = "Direct chat"
+    manager.save(direct)
+    work = manager.get_or_create("cli:work")
+    work.metadata["title"] = "Work chat"
+    manager.save(work)
+    dispatcher = RecordingDispatcher(manager)
+    inputs = iter(["/resume", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    asyncio.run(run_interactive(dispatcher, session_name="direct"))
+
+    output = capsys.readouterr().out
+    assert "* direct - Direct chat" in output
+    assert "  work - Work chat" in output
+    assert dispatcher.received == []
+
+
+def test_interactive_cli_new_creates_and_switches_to_new_session(tmp_path, monkeypatch):
+    manager = SessionManager(tmp_path)
+    dispatcher = RecordingDispatcher(manager)
+    inputs = iter(["/new", "hello", "exit"])
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr("myclaw.cli.commands.new_cli_session_name", lambda manager: "chat-test")
+
+    asyncio.run(run_interactive(dispatcher, session_name="direct"))
+
+    assert dispatcher.received == [("chat-test", "hello")]
+    assert prompts == ["You[direct]: ", "You[chat-test]: ", "You[chat-test]: "]
+    assert (tmp_path / "sessions" / "cli_chat-test.jsonl").exists()
 
 
 def test_cli_interactive_persists_two_turns(tmp_path):
@@ -143,11 +229,17 @@ def test_cli_interactive_persists_two_turns(tmp_path):
         text=True,
     )
 
-    assert "Assistant: Echo: first" in result.stdout
-    assert "Assistant: Echo: second" in result.stdout
-    assert result.stdout.startswith("You: Assistant: Echo: first\nYou: Assistant: Echo: second\nYou: ")
+    assert re.search(
+        r"You\[chat-\d{8}-\d{6}(?:-\d+)?\]: Assistant: Echo: first\n"
+        r"You\[first\]: Assistant: Echo: second\n"
+        r"You\[first\]: ",
+        result.stdout,
+    )
 
-    session_file = tmp_path / "workspace" / "sessions" / "cli_direct.jsonl"
+    session_files = list((tmp_path / "workspace" / "sessions").glob("cli_chat-*.jsonl"))
+    assert len(session_files) == 1
+    assert not (tmp_path / "workspace" / "sessions" / "cli_direct.jsonl").exists()
+    session_file = session_files[0]
     messages = [
         json.loads(line)
         for line in session_file.read_text(encoding="utf-8").splitlines()

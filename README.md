@@ -6,6 +6,7 @@ Run one turn:
 
 ```bash
 python -m myclaw "hello"
+python -m myclaw --session work "hello"
 ```
 
 Run interactively:
@@ -16,9 +17,14 @@ python -m myclaw
 
 Interactive commands:
 
+- `/resume` lists CLI sessions with their generated titles.
+- `/resume <name>` switches to the named session, creating it if needed.
+- `/new` creates and switches to a new session.
+- `/clear` clears the current session history.
 - `/status` shows whether the current session is idle, running, or queued.
 - `/stop` cancels the current in-flight turn and keeps recovery checkpoint state.
-- `/new` clears the current session history while keeping the same CLI session.
+
+Interactive mode starts in a new generated session unless `--session` is provided.
 
 Without `OPENAI_API_KEY`, the CLI uses a local fake provider so the MVP runs offline.
 For a real OpenAI-compatible endpoint, create `.env` in the project root:

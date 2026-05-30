@@ -294,11 +294,12 @@ def test_dispatcher_stop_cancels_active_session_task_without_final_message():
     assert outbound_size == 0
 
 
-def test_dispatcher_new_resets_idle_session_history(tmp_path):
+def test_dispatcher_clear_resets_idle_session_history(tmp_path):
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("cli:direct")
     session.add_message("user", "old")
     session.metadata["pending_user_turn"] = True
+    session.metadata["title"] = "Old title"
     manager.save(session)
     bus = MessageBus()
     loop = AgentLoop(
@@ -311,7 +312,7 @@ def test_dispatcher_new_resets_idle_session_history(tmp_path):
     async def scenario():
         task = asyncio.create_task(dispatcher.run())
         await bus.publish_inbound(
-            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/new")
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/clear")
         )
         outbound = await bus.consume_outbound()
         await _stop(task)
@@ -320,7 +321,7 @@ def test_dispatcher_new_resets_idle_session_history(tmp_path):
     outbound = asyncio.run(scenario())
     reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
 
-    assert outbound.content == "Started a new session."
+    assert outbound.content == "Cleared current session."
     assert outbound.event_type == "control"
     assert outbound.terminal is True
     assert reloaded.key == "cli:direct"
@@ -328,7 +329,7 @@ def test_dispatcher_new_resets_idle_session_history(tmp_path):
     assert reloaded.metadata == {}
 
 
-def test_dispatcher_new_refuses_to_reset_active_session():
+def test_dispatcher_clear_refuses_to_reset_active_session():
     bus = MessageBus()
     loop = BlockingLoop()
     dispatcher = AgentDispatcher(bus, loop)
@@ -340,7 +341,7 @@ def test_dispatcher_new_refuses_to_reset_active_session():
         )
         await loop.started.wait()
         await bus.publish_inbound(
-            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/new")
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/clear")
         )
         outbound = await bus.consume_outbound()
         loop.release.set()
@@ -350,9 +351,29 @@ def test_dispatcher_new_refuses_to_reset_active_session():
 
     outbound, final = asyncio.run(scenario())
 
-    assert outbound.content == "Cannot start a new session while a turn is running. Use /stop first."
+    assert outbound.content == "Cannot clear the current session while a turn is running. Use /stop first."
     assert outbound.event_type == "control"
     assert final.content == "done: one"
+
+
+def test_dispatcher_treats_new_as_regular_user_message():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/new")
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
+
+    assert loop.calls == [("/new", "cli:direct")]
+    assert outbound.content == "cli:direct: /new"
 
 
 class OneToolProvider:

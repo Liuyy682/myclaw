@@ -18,6 +18,7 @@ class AgentConfig:
     model: str = ""
     max_turns: int = 4
     max_tool_result_chars: int = 16_000
+    auto_title: bool = False
     history: list[Message] = field(default_factory=list)
 
 

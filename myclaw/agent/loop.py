@@ -16,6 +16,7 @@ class AgentLoop:
 
     _PENDING_USER_TURN_KEY = "pending_user_turn"
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
+    _SESSION_TITLE_KEY = "title"
     _PENDING_USER_ERROR = "Error: Task interrupted before a response was generated."
     _PENDING_TOOL_ERROR = "Error: Task interrupted before this tool finished."
 
@@ -68,6 +69,7 @@ class AgentLoop:
         self._persist_turn(session, result.messages)
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
+        await self._ensure_session_title(session)
         self.session_manager.save(session)
         run_messages = messages + [dict(message) for message in result.messages]
         return RunResult(
@@ -78,6 +80,67 @@ class AgentLoop:
 
     def reset_session(self, session_key: str) -> None:
         self.session_manager.reset(session_key)
+
+    async def _ensure_session_title(self, session: Session) -> None:
+        if not self.config.auto_title or session.metadata.get(self._SESSION_TITLE_KEY):
+            return
+
+        title = ""
+        if self.provider.model != "fake":
+            try:
+                title = self._clean_session_title(await self.provider.complete(self._title_messages(session)))
+            except Exception:
+                title = ""
+        session.metadata[self._SESSION_TITLE_KEY] = title or self._fallback_session_title(session)
+
+    @staticmethod
+    def _title_messages(session: Session) -> list[Message]:
+        transcript_lines = []
+        for message in session.messages:
+            role = message.get("role")
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+                transcript_lines.append(f"{role}: {content.strip()}")
+            if len(transcript_lines) >= 6:
+                break
+        transcript = "\n".join(transcript_lines)[:2000]
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Generate a concise chat title in the user's language. "
+                    "Return only the title, without quotes or punctuation."
+                ),
+            },
+            {"role": "user", "content": transcript},
+        ]
+
+    @classmethod
+    def _clean_session_title(cls, response: Any) -> str:
+        if isinstance(response, str):
+            content = response
+        else:
+            content = getattr(response, "content", "")
+        if not isinstance(content, str):
+            return ""
+        title = content.strip().strip("\"'` ")
+        if ":" in title and title.lower().split(":", 1)[0] in {"title", "标题"}:
+            title = title.split(":", 1)[1].strip()
+        return cls._truncate_title(title)
+
+    @classmethod
+    def _fallback_session_title(cls, session: Session) -> str:
+        for message in session.messages:
+            if message.get("role") == "user" and isinstance(message.get("content"), str):
+                return cls._truncate_title(message["content"].strip()) or "Untitled"
+        return "Untitled"
+
+    @staticmethod
+    def _truncate_title(title: str, limit: int = 60) -> str:
+        title = " ".join(title.split())
+        if len(title) <= limit:
+            return title
+        return title[: limit - 3].rstrip() + "..."
 
     def _messages_for_run(self, session: Session, user_text: str) -> list[Message]:
         return self.context_builder.build_messages(self.config, session.messages, user_text)

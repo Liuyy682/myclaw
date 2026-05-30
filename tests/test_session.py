@@ -79,6 +79,26 @@ def test_reset_clears_history_and_metadata_but_keeps_key(tmp_path):
     assert reloaded.metadata == {}
 
 
+def test_list_sessions_returns_saved_sessions_sorted_by_updated_at(tmp_path):
+    manager = SessionManager(tmp_path)
+    first = manager.get_or_create("cli:direct")
+    first.metadata["title"] = "Direct chat"
+    manager.save(first)
+    second = manager.get_or_create("cli:work")
+    second.metadata["title"] = "Work chat"
+    manager.save(second)
+
+    sessions = manager.list_sessions()
+
+    assert [session.key for session in sessions] == ["cli:work", "cli:direct"]
+    assert [session.metadata["title"] for session in sessions] == ["Work chat", "Direct chat"]
+
+
+def test_safe_key_keeps_default_cli_file_and_avoids_non_ascii_collisions():
+    assert SessionManager.safe_key("cli:direct") == "cli_direct"
+    assert SessionManager.safe_key("cli:工作") != SessionManager.safe_key("cli:旅行")
+
+
 def test_session_key_maps_to_safe_filename(tmp_path):
     manager = SessionManager(tmp_path)
     session = Session(key="cli:direct")

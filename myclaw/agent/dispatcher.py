@@ -16,7 +16,7 @@ class _SessionDispatchState:
 class AgentDispatcher:
     """Continuously bridge inbound bus messages to outbound agent responses."""
 
-    _CONTROL_COMMANDS = {"/new", "/status", "/stop"}
+    _CONTROL_COMMANDS = {"/clear", "/status", "/stop"}
 
     def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
         self.bus = bus
@@ -87,7 +87,7 @@ class AgentDispatcher:
         elif command == "/stop":
             content = await self._stop_session(msg.session_key)
         else:
-            content = self._new_session(msg.session_key)
+            content = self._clear_session(msg.session_key)
         await self._publish_control(msg, content)
 
     def _session_status(self, session_key: str) -> str:
@@ -115,12 +115,12 @@ class AgentDispatcher:
         await asyncio.gather(task, return_exceptions=True)
         return "Stopped current turn."
 
-    def _new_session(self, session_key: str) -> str:
+    def _clear_session(self, session_key: str) -> str:
         task = self._active_session_tasks.get(session_key)
         if task is not None and not task.done():
-            return "Cannot start a new session while a turn is running. Use /stop first."
+            return "Cannot clear the current session while a turn is running. Use /stop first."
         self.loop.reset_session(session_key)
-        return "Started a new session."
+        return "Cleared current session."
 
     async def _publish_control(self, msg: InboundMessage, content: str) -> None:
         await self.bus.publish_outbound(

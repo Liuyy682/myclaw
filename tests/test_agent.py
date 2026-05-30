@@ -47,6 +47,94 @@ class CapturingProvider:
         return f"Echo: {last_user}"
 
 
+class TitleProvider:
+    model = "title"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(self.calls) == 1:
+            return "assistant reply"
+        return "Project Planning"
+
+
+def test_run_generates_session_title_once_after_first_turn(tmp_path):
+    provider = TitleProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("plan the launch", session_key=SESSION_KEY))
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert reloaded.metadata["title"] == "Project Planning"
+    assert [message["content"] for message in reloaded.messages] == ["plan the launch", "assistant reply"]
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tools"] is None
+
+
+def test_run_does_not_refresh_existing_session_title(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create(SESSION_KEY)
+    session.metadata["title"] = "Existing Title"
+    manager.save(session)
+    provider = TitleProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("new topic", session_key=SESSION_KEY))
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert reloaded.metadata["title"] == "Existing Title"
+    assert len(provider.calls) == 1
+
+
+class FailingTitleProvider:
+    model = "title"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return "assistant reply"
+        raise RuntimeError("title unavailable")
+
+
+def test_run_uses_first_user_message_when_title_generation_fails(tmp_path):
+    loop = AgentLoop(
+        FailingTitleProvider(),
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("explain multi session design", session_key=SESSION_KEY))
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert reloaded.metadata["title"] == "explain multi session design"
+
+
+def test_run_uses_first_user_message_for_fake_provider_title(tmp_path):
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("hello offline mode", session_key=SESSION_KEY))
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert reloaded.metadata["title"] == "hello offline mode"
+
+
 def test_run_reuses_history_for_same_session_key(tmp_path):
     provider = CapturingProvider()
     loop = AgentLoop(

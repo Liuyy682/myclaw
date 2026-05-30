@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from hashlib import sha1
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +50,11 @@ class SessionManager:
 
     @staticmethod
     def safe_key(key: str) -> str:
-        return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "session"
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "session"
+        separator_normalized = re.sub(r"[:/\\\s]+", "_", key).strip("_")
+        if safe == separator_normalized:
+            return safe
+        return f"{safe}_{sha1(key.encode('utf-8')).hexdigest()[:8]}"
 
     def get_or_create(self, key: str) -> Session:
         if key in self._cache:
@@ -65,6 +70,16 @@ class SessionManager:
         session = Session(key=key)
         self.save(session)
         return session
+
+    def list_sessions(self) -> list[Session]:
+        sessions: dict[str, Session] = dict(self._cache)
+        for path in self.sessions_dir.glob("*.jsonl"):
+            key = self._session_key_from_path(path)
+            if key is not None and key not in sessions:
+                session = self._load(key)
+                if session is not None:
+                    sessions[key] = session
+        return sorted(sessions.values(), key=lambda session: session.updated_at, reverse=True)
 
     def save(self, session: Session) -> None:
         path = self._get_session_path(session.key)
@@ -121,6 +136,21 @@ class SessionManager:
             updated_at=updated_at or datetime.now(),
             metadata=metadata,
         )
+
+    def _session_key_from_path(self, path: Path) -> str | None:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("_type") != "metadata":
+                continue
+            key = data.get("key")
+            return key if isinstance(key, str) and key else None
+        return None
 
     @staticmethod
     def _metadata_line(session: Session) -> dict[str, Any]:
