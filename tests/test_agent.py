@@ -5,6 +5,7 @@ import pytest
 from myclaw import (
     AgentConfig,
     AgentLoop,
+    AgentRunResult,
     FakeProvider,
     FunctionTool,
     ToolCallRequest,
@@ -432,6 +433,29 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
         },
     ]
     assert reloaded.metadata == {}
+
+
+class SpecCapturingRunner:
+    def __init__(self):
+        self.spec = None
+
+    async def run(self, spec):
+        self.spec = spec
+        return AgentRunResult(content="ok", messages=[{"role": "assistant", "content": "ok"}])
+
+
+def test_run_passes_max_tool_result_chars_to_runner_spec(tmp_path):
+    loop = AgentLoop(
+        FakeProvider(),
+        AgentConfig(system_prompt="", max_tool_result_chars=12),
+        session_manager=SessionManager(tmp_path),
+    )
+    runner = SpecCapturingRunner()
+    loop.runner = runner
+
+    asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    assert runner.spec.max_tool_result_chars == 12
 
 
 def test_run_forwards_tool_progress_without_persisting_progress_events(tmp_path):

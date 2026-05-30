@@ -35,6 +35,7 @@ class AgentRunSpec:
     model: str
     max_iterations: int = 4
     tools: ToolRegistry | None = None
+    max_tool_result_chars: int | None = None
     checkpoint_callback: CheckpointCallback | None = None
     progress_callback: ProgressCallback | None = None
 

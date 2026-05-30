@@ -175,6 +175,44 @@ def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
     ]
 
 
+class LongToolResultProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append([dict(message) for message in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_long", name="long", arguments={})],
+            )
+        return LLMResponse(content=messages[-1]["content"], final=True)
+
+
+def test_runner_truncates_tool_result_before_model_call_and_generated_messages():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("long", "Long result", {"type": "object"}, lambda: "abcdef"))
+    provider = LongToolResultProvider()
+    runner = AgentRunner(provider)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "use tool"}],
+        model="tools",
+        max_iterations=3,
+        tools=registry,
+        max_tool_result_chars=3,
+    )))
+
+    expected = "abc\n[tool result truncated: 3 chars omitted]"
+    assert provider.calls[1][-1] == {"role": "tool", "tool_call_id": "call_long", "name": "long", "content": expected}
+    assert result.messages[1]["content"] == expected
+    assert result.content == expected
+
+
 class MultipleToolCallProvider:
     model = "tools"
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,9 @@ _IGNORED_DIRS = frozenset({".git", "node_modules", ".pytest_cache", "__pycache__
 def build_default_tool_registry(workspace: Path | str | None = None) -> ToolRegistry:
     root = Path(workspace).expanduser() if workspace is not None else Path.cwd()
     registry = ToolRegistry()
+    registry.register(EditFileTool(root))
+    registry.register(GlobTool(root))
+    registry.register(GrepTool(root))
     registry.register(ReadFileTool(root))
     registry.register(ListDirTool(root))
     registry.register(WriteFileTool(root))
@@ -71,6 +75,33 @@ class _FilesystemTool(Tool):
     @staticmethod
     def _error(exc: PermissionError) -> str:
         return f"Error: {exc}"
+
+    def _relative_path(self, path: Path) -> str:
+        return path.relative_to(self._workspace).as_posix()
+
+    def _is_ignored(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self._workspace)
+        except ValueError:
+            return True
+        return any(part in _IGNORED_DIRS for part in relative.parts)
+
+    def _is_safe_existing_path(self, path: Path) -> bool:
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError):
+            return False
+        return _is_under(resolved, self._workspace)
+
+    def _recursive_files(self, directory: Path) -> list[Path]:
+        if self._is_ignored(directory):
+            return []
+        files: list[Path] = []
+        for child in sorted(directory.rglob("*"), key=lambda item: self._relative_path(item)):
+            if self._is_ignored(child) or not child.is_file() or not self._is_safe_existing_path(child):
+                continue
+            files.append(child)
+        return files
 
 
 class ReadFileTool(_FilesystemTool):
@@ -202,6 +233,224 @@ class ListDirTool(_FilesystemTool):
                 continue
             entries.append(relative.as_posix())
         return entries
+
+
+class EditFileTool(_FilesystemTool):
+    @property
+    def name(self) -> str:
+        return "edit_file"
+
+    @property
+    def description(self) -> str:
+        return "Replace exact text in an existing UTF-8 file under the workspace. old_text must match exactly once."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit"},
+                "old_text": {"type": "string", "description": "Existing exact text to replace"},
+                "new_text": {"type": "string", "description": "Replacement text"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        }
+
+    async def execute(
+        self,
+        path: str | None = None,
+        old_text: str | None = None,
+        new_text: str = "",
+        **kwargs: Any,
+    ) -> str:
+        if not path:
+            return "Error editing file: Unknown path"
+        if old_text is None:
+            return "Error: old_text is required"
+        old_text = str(old_text)
+        if old_text == "":
+            return "Error: old_text must be non-empty"
+        new_text = str(new_text)
+
+        try:
+            file_path = self._resolve(path)
+        except PermissionError as exc:
+            return self._error(exc)
+
+        if not file_path.exists():
+            return f"Error: File not found: {path}"
+        if not file_path.is_file():
+            return f"Error: Not a file: {path}"
+
+        try:
+            text = file_path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return f"Error: Cannot edit binary file: {path}"
+
+        matches = text.count(old_text)
+        if matches == 0:
+            return f"Error: old_text not found in {path}"
+        if matches > 1:
+            return f"Error: old_text matched {matches} times in {path}; expected exactly 1"
+
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        return f"Edited {path}: replaced 1 occurrence"
+
+
+class GrepTool(_FilesystemTool):
+    _DEFAULT_MAX_MATCHES = 100
+
+    @property
+    def name(self) -> str:
+        return "grep"
+
+    @property
+    def description(self) -> str:
+        return "Regex-search UTF-8 text files under the workspace. Output format is PATH:LINE|CONTENT."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Python regular expression to search for"},
+                "path": {"type": "string", "description": "File or directory path to search"},
+                "case_sensitive": {"type": "boolean", "description": "Whether matching is case-sensitive"},
+                "max_matches": {"type": "integer", "description": "Maximum matches to return"},
+            },
+            "required": ["pattern"],
+        }
+
+    async def execute(
+        self,
+        pattern: str | None = None,
+        path: str | None = ".",
+        case_sensitive: bool = True,
+        max_matches: int = _DEFAULT_MAX_MATCHES,
+        **kwargs: Any,
+    ) -> str:
+        if pattern is None:
+            return "Error: pattern is required"
+        try:
+            limit = max(1, int(max_matches))
+        except (TypeError, ValueError):
+            return "Error: max_matches must be an integer"
+        try:
+            regex = re.compile(str(pattern), 0 if case_sensitive else re.IGNORECASE)
+        except re.error as exc:
+            return f"Error: Invalid regex: {exc}"
+
+        display_path = path or "."
+        try:
+            target = self._resolve(display_path)
+        except PermissionError as exc:
+            return self._error(exc)
+
+        if not target.exists():
+            return f"Error: Path not found: {display_path}"
+
+        if target.is_file():
+            candidates = [] if self._is_ignored(target) else [target]
+        elif target.is_dir():
+            candidates = self._recursive_files(target)
+        else:
+            return f"Error: Not a file or directory: {display_path}"
+
+        matches: list[str] = []
+        for file_path in candidates:
+            try:
+                text = file_path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+            except (OSError, UnicodeDecodeError):
+                continue
+            relative = self._relative_path(file_path)
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                if regex.search(line):
+                    matches.append(f"{relative}:{line_no}|{line}")
+
+        if not matches:
+            return f"(No matches for pattern in {display_path})"
+
+        shown = matches[:limit]
+        result = "\n".join(shown)
+        if len(matches) > limit:
+            result += f"\n[truncated: showing {limit} of {len(matches)} matches]"
+        return result
+
+
+class GlobTool(_FilesystemTool):
+    _DEFAULT_MAX_MATCHES = 200
+
+    @property
+    def name(self) -> str:
+        return "glob"
+
+    @property
+    def description(self) -> str:
+        return "List workspace-relative files and directories matching a glob pattern."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern such as *.py or **/*.md"},
+                "path": {"type": "string", "description": "Directory path to search from"},
+                "max_matches": {"type": "integer", "description": "Maximum matches to return"},
+            },
+            "required": ["pattern"],
+        }
+
+    async def execute(
+        self,
+        pattern: str | None = None,
+        path: str | None = ".",
+        max_matches: int = _DEFAULT_MAX_MATCHES,
+        **kwargs: Any,
+    ) -> str:
+        if pattern is None or str(pattern) == "":
+            return "Error: pattern is required"
+        try:
+            limit = max(1, int(max_matches))
+        except (TypeError, ValueError):
+            return "Error: max_matches must be an integer"
+
+        display_path = path or "."
+        try:
+            directory = self._resolve(display_path)
+        except PermissionError as exc:
+            return self._error(exc)
+
+        if not directory.exists():
+            return f"Error: Directory not found: {display_path}"
+        if not directory.is_dir():
+            return f"Error: Not a directory: {display_path}"
+
+        try:
+            raw_matches = list(directory.glob(str(pattern)))
+        except (NotImplementedError, ValueError) as exc:
+            return f"Error: Invalid glob pattern: {exc}"
+
+        safe_matches = sorted(
+            (
+                candidate
+                for candidate in raw_matches
+                if not self._is_ignored(candidate) and self._is_safe_existing_path(candidate)
+            ),
+            key=lambda item: self._relative_path(item),
+        )
+        matches = [self._format_glob_match(candidate) for candidate in safe_matches]
+        if not matches:
+            return f"(No matches for pattern in {display_path})"
+
+        shown = matches[:limit]
+        result = "\n".join(shown)
+        if len(matches) > limit:
+            result += f"\n[truncated: showing {limit} of {len(matches)} matches]"
+        return result
+
+    def _format_glob_match(self, path: Path) -> str:
+        relative = self._relative_path(path)
+        return f"{relative}/" if path.is_dir() else relative
 
 
 class WriteFileTool(_FilesystemTool):

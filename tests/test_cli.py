@@ -263,6 +263,9 @@ def test_build_agent_loop_registers_default_file_tools(tmp_path, monkeypatch):
 
     assert loop.tool_registry is not None
     assert [definition["function"]["name"] for definition in loop.tool_registry.definitions()] == [
+        "edit_file",
+        "glob",
+        "grep",
         "list_dir",
         "read_file",
         "write_file",

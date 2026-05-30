@@ -6,6 +6,8 @@ from typing import Any
 from myclaw.providers.base import ToolCallRequest
 from myclaw.tools.base import Tool
 
+TOOL_RESULT_TRUNCATED_TEMPLATE = "[tool result truncated: {omitted} chars omitted]"
+
 
 class ToolRegistry:
     """Registry for OpenAI-style function tools."""
@@ -56,17 +58,17 @@ class ToolRegistry:
             )
         return tool, request.arguments, None
 
-    async def execute(self, request: ToolCallRequest) -> str:
+    async def execute(self, request: ToolCallRequest, *, max_result_chars: int | None = None) -> str:
         tool, arguments, error = self.prepare_call(request)
         if error is not None:
-            return error
+            return self._truncate_result(error, max_result_chars)
 
         try:
             assert tool is not None
             result = await tool.execute(**arguments)
         except Exception as exc:
-            return f"Error executing {request.name}: {exc}"
-        return self._normalize_result(result)
+            return self._truncate_result(f"Error executing {request.name}: {exc}", max_result_chars)
+        return self._truncate_result(self._normalize_result(result), max_result_chars)
 
     @staticmethod
     def _normalize_result(result: Any) -> str:
@@ -78,6 +80,13 @@ class ToolRegistry:
             return json.dumps(result, ensure_ascii=False)
         except TypeError:
             return str(result) if str(result) else "(empty)"
+
+    @staticmethod
+    def _truncate_result(result: str, max_result_chars: int | None) -> str:
+        if max_result_chars is None or len(result) <= max_result_chars:
+            return result
+        omitted = len(result) - max_result_chars
+        return f"{result[:max_result_chars]}\n{TOOL_RESULT_TRUNCATED_TEMPLATE.format(omitted=omitted)}"
 
     @property
     def tool_names(self) -> list[str]:

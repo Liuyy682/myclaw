@@ -67,6 +67,28 @@ def test_registry_executes_sync_and_async_function_tools():
     assert shout_result == "HELLO"
 
 
+def test_registry_truncates_normalized_string_tool_results():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("long", "Long result", {"type": "object"}, lambda: "abcdef"))
+
+    result = asyncio.run(
+        registry.execute(ToolCallRequest(id="call_long", name="long", arguments={}), max_result_chars=3)
+    )
+
+    assert result == "abc\n[tool result truncated: 3 chars omitted]"
+
+
+def test_registry_truncates_normalized_json_tool_results():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("json", "JSON result", {"type": "object"}, lambda: {"value": "abcdef"}))
+
+    result = asyncio.run(
+        registry.execute(ToolCallRequest(id="call_json", name="json", arguments={}), max_result_chars=10)
+    )
+
+    assert result == '{"value": \n[tool result truncated: 9 chars omitted]'
+
+
 def test_registry_returns_readable_errors_for_unknown_tools_bad_arguments_and_exceptions():
     registry = ToolRegistry()
     registry.register(FunctionTool("boom", "Raise", {"type": "object"}, lambda: (_ for _ in ()).throw(ValueError("bad"))))

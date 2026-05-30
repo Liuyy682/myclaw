@@ -62,6 +62,7 @@ class AgentLoop:
                 model=self.config.model or self.provider.model,
                 max_iterations=self.config.max_turns,
                 tools=self.tool_registry,
+                max_tool_result_chars=self.config.max_tool_result_chars,
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
                 progress_callback=progress_callback,
             )

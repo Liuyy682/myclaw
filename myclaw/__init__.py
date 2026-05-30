@@ -15,7 +15,10 @@ from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, OpenAICompatibleProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import (
+    EditFileTool,
     FunctionTool,
+    GlobTool,
+    GrepTool,
     ListDirTool,
     ReadFileTool,
     Tool,
@@ -33,8 +36,11 @@ __all__ = [
     "AgentRunResult",
     "AgentRunner",
     "AgentRunSpec",
+    "EditFileTool",
     "FakeProvider",
     "FunctionTool",
+    "GlobTool",
+    "GrepTool",
     "InboundMessage",
     "LLMProvider",
     "LLMResponse",
