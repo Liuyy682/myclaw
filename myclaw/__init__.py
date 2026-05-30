@@ -2,6 +2,7 @@
 
 from myclaw.agent import (
     AgentConfig,
+    ContextBuilder,
     AgentDispatcher,
     AgentLoop,
     AgentRunResult,
@@ -25,6 +26,7 @@ from myclaw.tools import (
 
 __all__ = [
     "AgentConfig",
+    "ContextBuilder",
     "AgentDispatcher",
     "AgentLoop",
     "AgentRunResult",

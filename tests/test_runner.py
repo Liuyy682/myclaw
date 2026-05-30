@@ -136,7 +136,24 @@ def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
 
     assert result.content == "sum is 5"
     assert result.stop_reason == "completed"
-    assert result.messages == [{"role": "assistant", "content": "sum is 5"}]
+    assert result.messages == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "arguments": '{"a": 2, "b": 3}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+        {"role": "assistant", "content": "sum is 5"},
+    ]
     assert provider.calls[0]["tools"] == registry.definitions()
     assert provider.calls[1]["messages"] == [
         {"role": "user", "content": "add 2 and 3"},
@@ -229,7 +246,33 @@ def test_runner_stops_tool_loop_at_max_iterations():
 
     assert provider.calls == 2
     assert result.stop_reason == "max_iterations"
-    assert result.messages == []
+    assert result.content == ""
+    assert result.messages == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "noop", "content": "ok"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_2", "name": "noop", "content": "ok"},
+    ]
 
 
 def test_runner_returns_error_state_when_provider_fails():

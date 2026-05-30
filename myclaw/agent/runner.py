@@ -14,6 +14,7 @@ class AgentRunner:
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         working_messages = [dict(message) for message in spec.messages]
         generated: list[Message] = []
+        last_assistant_content = ""
 
         for _ in range(spec.max_iterations):
             try:
@@ -33,18 +34,24 @@ class AgentRunner:
 
             llm_response = self._normalize_response(response)
             if llm_response.should_execute_tools:
-                working_messages.append(
-                    self._assistant_tool_call_message(llm_response.content, llm_response.tool_calls)
+                assistant_message = self._assistant_tool_call_message(
+                    llm_response.content,
+                    llm_response.tool_calls,
                 )
+                generated.append(assistant_message)
+                working_messages.append(assistant_message)
                 registry = spec.tools or ToolRegistry()
                 for tool_call in llm_response.tool_calls:
                     tool_result = await registry.execute(tool_call)
-                    working_messages.append(self._tool_message(tool_call, tool_result))
+                    tool_message = self._tool_message(tool_call, tool_result)
+                    generated.append(tool_message)
+                    working_messages.append(tool_message)
                 continue
 
             assistant_message = self._assistant_message(llm_response.content)
             generated.append(assistant_message)
             working_messages.append(assistant_message)
+            last_assistant_content = assistant_message["content"]
 
             if llm_response.final:
                 return AgentRunResult(
@@ -54,7 +61,7 @@ class AgentRunner:
                 )
 
         return AgentRunResult(
-            content=generated[-1]["content"] if generated else "",
+            content=last_assistant_content,
             messages=generated,
             stop_reason="max_iterations",
         )

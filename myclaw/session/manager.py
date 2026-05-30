@@ -28,12 +28,13 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_message(self, role: str, content: str) -> None:
+    def add_message(self, role: str, content: str, **fields: Any) -> None:
         self.messages.append(
             {
                 "role": role,
                 "content": content,
                 "timestamp": datetime.now().isoformat(),
+                **fields,
             }
         )
         self.updated_at = datetime.now()

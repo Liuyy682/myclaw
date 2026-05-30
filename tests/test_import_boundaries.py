@@ -2,6 +2,7 @@ def test_public_api_exports_stay_stable():
     import myclaw
     from myclaw import (
         AgentConfig,
+        ContextBuilder,
         AgentLoop,
         AgentRunner,
         FakeProvider,
@@ -22,6 +23,7 @@ def test_public_api_exports_stay_stable():
 
     assert not hasattr(myclaw, "Agent")
     assert AgentConfig.__name__ == "AgentConfig"
+    assert ContextBuilder.__name__ == "ContextBuilder"
     assert AgentLoop.__name__ == "AgentLoop"
     assert AgentRunner.__name__ == "AgentRunner"
     assert FakeProvider.__name__ == "FakeProvider"
@@ -42,6 +44,7 @@ def test_public_api_exports_stay_stable():
 
 def test_nanobot_style_internal_module_boundaries_are_available():
     from myclaw.agent.dispatcher import AgentDispatcher
+    from myclaw.agent.context import ContextBuilder
     from myclaw.agent.loop import AgentLoop
     from myclaw.agent.runner import AgentRunner
     from myclaw.agent.types import AgentRunSpec
@@ -64,6 +67,7 @@ def test_nanobot_style_internal_module_boundaries_are_available():
     )
 
     assert AgentDispatcher.__name__ == "AgentDispatcher"
+    assert ContextBuilder.__name__ == "ContextBuilder"
     assert AgentLoop.__name__ == "AgentLoop"
     assert AgentRunner.__name__ == "AgentRunner"
     assert AgentRunSpec.__name__ == "AgentRunSpec"

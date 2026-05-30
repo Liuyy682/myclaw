@@ -27,6 +27,27 @@ def test_save_creates_jsonl_with_metadata_and_messages(tmp_path):
     assert "timestamp" in first_message
 
 
+def test_session_add_message_preserves_structured_tool_fields(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = Session(key="cli:direct")
+    tool_calls = [
+        {
+            "id": "call_add",
+            "type": "function",
+            "function": {"name": "add", "arguments": "{}"},
+        }
+    ]
+    session.add_message("assistant", "", tool_calls=tool_calls)
+    session.add_message("tool", "5", tool_call_id="call_add", name="add")
+
+    manager.save(session)
+    reloaded = SessionManager(tmp_path).get_or_create("cli:direct")
+
+    assert reloaded.messages[0]["tool_calls"] == tool_calls
+    assert reloaded.messages[1]["tool_call_id"] == "call_add"
+    assert reloaded.messages[1]["name"] == "add"
+
+
 def test_get_or_create_loads_existing_history(tmp_path):
     manager = SessionManager(tmp_path)
     session = Session(key="cli:direct")

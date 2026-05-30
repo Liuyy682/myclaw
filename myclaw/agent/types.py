@@ -14,6 +14,7 @@ class AgentConfig:
     system_prompt: str = "You are a helpful personal assistant."
     model: str = ""
     max_turns: int = 4
+    max_tool_result_chars: int = 16_000
     history: list[Message] = field(default_factory=list)
 
 

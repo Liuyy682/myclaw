@@ -210,7 +210,7 @@ class ToolLoopProvider:
         return LLMResponse(content="sum is 5", final=True)
 
 
-def test_run_executes_tool_loop_and_persists_only_final_assistant_message(tmp_path):
+def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     manager = SessionManager(tmp_path)
     registry = ToolRegistry()
     registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
@@ -227,6 +227,21 @@ def test_run_executes_tool_loop_and_persists_only_final_assistant_message(tmp_pa
     assert result.content == "sum is 5"
     assert result.messages == [
         {"role": "user", "content": "what is 2 + 3?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "arguments": '{"a": 2, "b": 3}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
         {"role": "assistant", "content": "sum is 5"},
     ]
     assert provider.calls[1] == [
@@ -248,9 +263,39 @@ def test_run_executes_tool_loop_and_persists_only_final_assistant_message(tmp_pa
         {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
     ]
     reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
-    assert [message["content"] for message in reloaded.messages] == [
-        "what is 2 + 3?",
-        "sum is 5",
+    assert reloaded.messages == [
+        {
+            "role": "user",
+            "content": "what is 2 + 3?",
+            "timestamp": reloaded.messages[0]["timestamp"],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "timestamp": reloaded.messages[1]["timestamp"],
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "arguments": '{"a": 2, "b": 3}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "5",
+            "timestamp": reloaded.messages[2]["timestamp"],
+            "tool_call_id": "call_add",
+            "name": "add",
+        },
+        {
+            "role": "assistant",
+            "content": "sum is 5",
+            "timestamp": reloaded.messages[3]["timestamp"],
+        },
     ]
 
 
@@ -289,4 +334,9 @@ def test_run_executes_builtin_read_file_tool(tmp_path):
 
     assert result.content == "read complete"
     reloaded = SessionManager(tmp_path / "sessions").get_or_create(SESSION_KEY)
-    assert [message["content"] for message in reloaded.messages] == ["read note", "read complete"]
+    assert [message["role"] for message in reloaded.messages] == ["user", "assistant", "tool", "assistant"]
+    assert reloaded.messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert reloaded.messages[2]["tool_call_id"] == "call_read"
+    assert reloaded.messages[2]["name"] == "read_file"
+    assert reloaded.messages[2]["content"] == "1|hello from file"
+    assert reloaded.messages[3]["content"] == "read complete"
