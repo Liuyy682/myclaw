@@ -145,6 +145,7 @@ def test_cli_interactive_persists_two_turns(tmp_path):
 
     assert "Assistant: Echo: first" in result.stdout
     assert "Assistant: Echo: second" in result.stdout
+    assert result.stdout.startswith("You: Assistant: Echo: first\nYou: Assistant: Echo: second\nYou: ")
 
     session_file = tmp_path / "workspace" / "sessions" / "cli_direct.jsonl"
     messages = [

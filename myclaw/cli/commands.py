@@ -101,6 +101,7 @@ async def run_interactive(dispatcher: AgentDispatcher) -> None:
                 )
             )
             await asyncio.sleep(0)
+            await _wait_for_pending_output(pending, timeout=None)
     finally:
         for task in (output_task, dispatcher_task):
             task.cancel()
@@ -123,9 +124,12 @@ async def _print_interactive_output(dispatcher: AgentDispatcher, pending: dict) 
             pending["changed"].set()
 
 
-async def _wait_for_pending_output(pending: dict, timeout: float = 0.2) -> None:
+async def _wait_for_pending_output(pending: dict, timeout: float | None = 0.2) -> None:
     while pending["count"] > 0:
         pending["changed"].clear()
+        if timeout is None:
+            await pending["changed"].wait()
+            continue
         try:
             await asyncio.wait_for(pending["changed"].wait(), timeout=timeout)
         except asyncio.TimeoutError:
