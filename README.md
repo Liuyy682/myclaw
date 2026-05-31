@@ -15,20 +15,24 @@ Run interactively:
 python -m myclaw
 ```
 
-Run as a JSONL gateway:
+Run as a local HTTP gateway with WebUI:
 
 ```bash
 python -m myclaw gateway
+python -m myclaw gateway --host 127.0.0.1 --port 8765
 ```
 
-Gateway mode reads one JSON object per stdin line, for example:
+Open:
 
-```json
-{"id":"req-1","chat_id":"direct","content":"hello"}
+```text
+http://127.0.0.1:8765/
 ```
 
-and writes one JSON event per stdout line. To send the literal one-shot message
-`gateway`, use `python -m myclaw -- gateway`.
+The WebUI posts messages to `/api/messages`, receives streamed replies from
+`/api/events`, and lists saved conversations from `/api/sessions`. Selecting a
+history entry loads its user/assistant messages and sends future turns with that
+entry's `session_key`, so gateway sessions and CLI sessions can both be resumed.
+To send the literal one-shot message `gateway`, use `python -m myclaw -- gateway`.
 
 Interactive commands:
 

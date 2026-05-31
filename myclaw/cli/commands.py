@@ -11,7 +11,7 @@ from pathlib import Path
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherRuntime
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config.env import load_env_file
-from myclaw.gateway import run_gateway
+from myclaw.gateway import DEFAULT_GATEWAY_HOST, DEFAULT_GATEWAY_PORT, run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
@@ -270,9 +270,15 @@ def _session_label(dispatcher: AgentDispatcher, session_name: str) -> str:
 
 async def async_main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "gateway":
-        parser = argparse.ArgumentParser(description="Run the myclaw JSONL gateway.")
-        parser.parse_args(sys.argv[2:])
-        await run_gateway(build_dispatcher())
+        parser = argparse.ArgumentParser(description="Run the myclaw HTTP gateway.")
+        parser.add_argument("--host", default=DEFAULT_GATEWAY_HOST, help="Host to bind.")
+        parser.add_argument("--port", type=int, default=DEFAULT_GATEWAY_PORT, help="Port to bind.")
+        args = parser.parse_args(sys.argv[2:])
+        try:
+            await run_gateway(build_dispatcher(), host=args.host, port=args.port)
+        except OSError as exc:
+            print(f"Error: could not start gateway on {args.host}:{args.port}: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
         return
 
     parser = argparse.ArgumentParser(description="Run the myclaw assistant MVP.")
