@@ -4,6 +4,7 @@ from myclaw.agent import (
     AgentConfig,
     ContextBuilder,
     AgentDispatcher,
+    DispatcherRuntime,
     AgentLoop,
     AgentRunResult,
     AgentRunner,
@@ -12,6 +13,7 @@ from myclaw.agent import (
     RunResult,
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
+from myclaw.gateway import run_gateway
 from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, OpenAICompatibleProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import (
@@ -32,6 +34,7 @@ __all__ = [
     "AgentConfig",
     "ContextBuilder",
     "AgentDispatcher",
+    "DispatcherRuntime",
     "AgentLoop",
     "AgentRunResult",
     "AgentRunner",
@@ -58,4 +61,5 @@ __all__ = [
     "ToolRegistry",
     "WriteFileTool",
     "build_default_tool_registry",
+    "run_gateway",
 ]

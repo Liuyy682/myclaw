@@ -15,6 +15,21 @@ Run interactively:
 python -m myclaw
 ```
 
+Run as a JSONL gateway:
+
+```bash
+python -m myclaw gateway
+```
+
+Gateway mode reads one JSON object per stdin line, for example:
+
+```json
+{"id":"req-1","chat_id":"direct","content":"hello"}
+```
+
+and writes one JSON event per stdout line. To send the literal one-shot message
+`gateway`, use `python -m myclaw -- gateway`.
+
 Interactive commands:
 
 - `/resume` lists CLI sessions with their generated titles.

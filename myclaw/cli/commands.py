@@ -4,12 +4,14 @@ import argparse
 import asyncio
 import contextlib
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherRuntime
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config.env import load_env_file
+from myclaw.gateway import run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
@@ -60,12 +62,12 @@ def _cli_session_name(session_key: str) -> str | None:
 
 
 async def dispatch_text(
-    dispatcher: AgentDispatcher,
+    runtime: DispatcherRuntime,
     text: str,
     *,
     session_name: str = DEFAULT_CLI_SESSION_NAME,
 ) -> OutboundMessage:
-    await dispatcher.bus.publish_inbound(
+    await runtime.dispatcher.bus.publish_inbound(
         InboundMessage(
             channel="cli",
             sender_id="user",
@@ -73,16 +75,10 @@ async def dispatch_text(
             content=text,
         )
     )
-    task = asyncio.create_task(dispatcher.run())
-    try:
-        while True:
-            outbound = await dispatcher.bus.consume_outbound()
-            if outbound.terminal:
-                return outbound
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    while True:
+        outbound = await runtime.dispatcher.bus.consume_outbound()
+        if outbound.terminal:
+            return outbound
 
 
 async def run_once(
@@ -91,7 +87,8 @@ async def run_once(
     *,
     session_name: str = DEFAULT_CLI_SESSION_NAME,
 ) -> None:
-    outbound = await dispatch_text(dispatcher, text, session_name=session_name)
+    async with DispatcherRuntime(dispatcher) as runtime:
+        outbound = await dispatch_text(runtime, text, session_name=session_name)
     print(outbound.content)
 
 
@@ -103,46 +100,44 @@ async def run_interactive(
     if session_name is None:
         session_name = _create_new_cli_session(dispatcher)
     pending = {"count": 0, "changed": asyncio.Event()}
-    dispatcher_task = asyncio.create_task(dispatcher.run())
-    output_task = asyncio.create_task(_print_interactive_output(dispatcher, pending))
-    try:
-        while True:
-            try:
-                text = await asyncio.to_thread(input, f"You[{_session_label(dispatcher, session_name)}]: ")
-            except EOFError:
-                print()
-                await _wait_for_pending_output(pending)
-                return
-            if text.strip().lower() in EXIT_COMMANDS:
-                await _wait_for_pending_output(pending)
-                return
-            if not text.strip():
-                continue
-            resumed = _resume_target(text)
-            if resumed is not None:
-                session_name = _handle_resume(dispatcher, session_name, resumed, pending)
-                continue
-            if _new_requested(text):
-                session_name = _handle_new_session(dispatcher, session_name, pending)
-                continue
-            pending["count"] += 1
-            pending["changed"].clear()
-            await dispatcher.bus.publish_inbound(
-                InboundMessage(
-                    channel="cli",
-                    sender_id="user",
-                    chat_id=session_name,
-                    content=text,
+    async with DispatcherRuntime(dispatcher):
+        output_task = asyncio.create_task(_print_interactive_output(dispatcher, pending))
+        try:
+            while True:
+                try:
+                    text = await asyncio.to_thread(input, f"You[{_session_label(dispatcher, session_name)}]: ")
+                except EOFError:
+                    print()
+                    await _wait_for_pending_output(pending)
+                    return
+                if text.strip().lower() in EXIT_COMMANDS:
+                    await _wait_for_pending_output(pending)
+                    return
+                if not text.strip():
+                    continue
+                resumed = _resume_target(text)
+                if resumed is not None:
+                    session_name = _handle_resume(dispatcher, session_name, resumed, pending)
+                    continue
+                if _new_requested(text):
+                    session_name = _handle_new_session(dispatcher, session_name, pending)
+                    continue
+                pending["count"] += 1
+                pending["changed"].clear()
+                await dispatcher.bus.publish_inbound(
+                    InboundMessage(
+                        channel="cli",
+                        sender_id="user",
+                        chat_id=session_name,
+                        content=text,
+                    )
                 )
-            )
-            await asyncio.sleep(0)
-            await _wait_for_pending_output(pending, timeout=None)
-    finally:
-        for task in (output_task, dispatcher_task):
-            task.cancel()
-        for task in (output_task, dispatcher_task):
+                await asyncio.sleep(0)
+                await _wait_for_pending_output(pending, timeout=None)
+        finally:
+            output_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                await output_task
 
 
 async def _print_interactive_output(dispatcher: AgentDispatcher, pending: dict) -> None:
@@ -274,6 +269,12 @@ def _session_label(dispatcher: AgentDispatcher, session_name: str) -> str:
 
 
 async def async_main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "gateway":
+        parser = argparse.ArgumentParser(description="Run the myclaw JSONL gateway.")
+        parser.parse_args(sys.argv[2:])
+        await run_gateway(build_dispatcher())
+        return
+
     parser = argparse.ArgumentParser(description="Run the myclaw assistant MVP.")
     parser.add_argument(
         "--session",

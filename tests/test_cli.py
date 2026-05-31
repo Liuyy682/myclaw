@@ -5,6 +5,7 @@ import sys
 import os
 import json
 
+from myclaw import DispatcherRuntime
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file
@@ -110,8 +111,11 @@ class ProgressThenFinalDispatcher:
 def test_dispatch_text_waits_for_terminal_outbound_message():
     dispatcher = ProgressThenFinalDispatcher()
 
-    outbound = asyncio.run(dispatch_text(dispatcher, "hello"))
+    async def scenario():
+        async with DispatcherRuntime(dispatcher) as runtime:
+            return await dispatch_text(runtime, "hello")
 
+    outbound = asyncio.run(scenario())
     assert outbound.content == "final answer"
     assert outbound.terminal is True
 
@@ -136,6 +140,23 @@ class RecordingDispatcher:
                     event_type="control" if msg.content.startswith("/") else "message",
                 )
             )
+
+
+def test_dispatch_text_uses_existing_runtime_for_multiple_messages():
+    dispatcher = RecordingDispatcher()
+
+    async def scenario():
+        async with DispatcherRuntime(dispatcher) as runtime:
+            first = await dispatch_text(runtime, "first")
+            second = await dispatch_text(runtime, "second")
+            return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert dispatcher.run_calls == 1
+    assert dispatcher.received == [("direct", "first"), ("direct", "second")]
+    assert first.content == "ack: first"
+    assert second.content == "ack: second"
 
 
 def test_interactive_cli_keeps_one_dispatcher_running_for_multiple_inputs(monkeypatch):
