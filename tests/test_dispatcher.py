@@ -47,6 +47,62 @@ class CapturingLoop:
         return type("Result", (), {"content": f"{session_key}: {text}"})()
 
 
+class RecordingAutoCompact:
+    def __init__(self):
+        self.calls = []
+        self.called = asyncio.Event()
+
+    def check_expired(self, schedule_background, active_session_keys=()):
+        self.calls.append(set(active_session_keys))
+        self.called.set()
+
+
+def test_dispatcher_idle_tick_checks_auto_compact():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    loop.auto_compact = RecordingAutoCompact()
+    dispatcher = AgentDispatcher(bus, loop)
+    dispatcher._AUTO_COMPACT_IDLE_TICK_SECONDS = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await asyncio.wait_for(loop.auto_compact.called.wait(), timeout=0.5)
+        await _stop(task)
+        return loop.auto_compact.calls
+
+    calls = asyncio.run(scenario())
+
+    assert calls == [set()]
+
+
+def test_dispatcher_idle_tick_skips_active_or_queued_sessions():
+    bus = MessageBus()
+    loop = BlockingLoop()
+    loop.auto_compact = RecordingAutoCompact()
+    dispatcher = AgentDispatcher(bus, loop)
+    dispatcher._AUTO_COMPACT_IDLE_TICK_SECONDS = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="one")
+        )
+        await loop.started.wait()
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="two")
+        )
+        await asyncio.wait_for(loop.auto_compact.called.wait(), timeout=0.5)
+        loop.release.set()
+        await bus.consume_outbound()
+        await bus.consume_outbound()
+        await _stop(task)
+        return loop.auto_compact.calls
+
+    calls = asyncio.run(scenario())
+
+    assert calls[-1] == {"cli:direct"}
+
+
 class StreamingLoop:
     def __init__(self):
         self.calls = []

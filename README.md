@@ -57,3 +57,13 @@ OPENAI_MODEL=gpt-4o-mini
 ```
 
 Existing shell environment variables take priority over `.env` values.
+
+Optional idle compaction can be enabled with:
+
+```env
+MYCLAW_IDLE_COMPACT_AFTER_MINUTES=15
+```
+
+The default is `0`, which disables auto-compact. When enabled, idle sessions are
+summarized before they are resumed and only the recent conversation tail is kept
+in the session file.

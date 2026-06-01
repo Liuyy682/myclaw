@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -724,6 +725,20 @@ def test_agent_loop_rejects_invalid_context_budget_config(tmp_path, field):
         AgentLoop(FakeProvider(), config, session_manager=SessionManager(tmp_path))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("idle_compact_after_minutes", -1),
+        ("auto_compact_recent_messages", 0),
+    ],
+)
+def test_agent_loop_rejects_invalid_auto_compact_config(tmp_path, field, value):
+    config = AgentConfig(system_prompt="", **{field: value})
+
+    with pytest.raises(ValueError, match=field):
+        AgentLoop(FakeProvider(), config, session_manager=SessionManager(tmp_path))
+
+
 class BudgetSummaryProvider:
     model = "budget"
 
@@ -753,6 +768,19 @@ class FailingSummaryProvider:
         return "main answer"
 
 
+class SlowBudgetSummaryProvider(BudgetSummaryProvider):
+    def __init__(self):
+        super().__init__()
+        self.summary_started = asyncio.Event()
+        self.release_summary = asyncio.Event()
+
+    async def complete(self, messages, *, tools=None):
+        if messages and messages[0]["role"] == "system" and "Summarize older conversation turns" in messages[0]["content"]:
+            self.summary_started.set()
+            await self.release_summary.wait()
+        return await super().complete(messages, tools=tools)
+
+
 def _seed_plain_turns(manager, pairs):
     session = manager.get_or_create(SESSION_KEY)
     for user_text, assistant_text in pairs:
@@ -760,6 +788,15 @@ def _seed_plain_turns(manager, pairs):
         session.add_message("assistant", assistant_text)
     manager.save(session)
     return session
+
+
+def _set_saved_session_updated_at(workspace, key, updated_at):
+    path = SessionManager(workspace)._get_session_path(key)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    metadata = json.loads(lines[0])
+    metadata["updated_at"] = updated_at.isoformat()
+    lines[0] = json.dumps(metadata)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_run_summarizes_old_turns_when_message_budget_exceeded(tmp_path):
@@ -814,6 +851,190 @@ def test_run_summarizes_old_turns_when_message_budget_exceeded(tmp_path):
             "content": "compressed old turns",
         }
     ]
+
+
+def test_run_auto_compacts_expired_session_before_prompt(tmp_path):
+    seed_manager = SessionManager(tmp_path)
+    _seed_plain_turns(
+        seed_manager,
+        [(f"old question {index}", f"old answer {index}") for index in range(6)],
+    )
+    _set_saved_session_updated_at(tmp_path, SESSION_KEY, datetime.now() - timedelta(minutes=20))
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(
+            system_prompt="",
+            max_context_messages=100,
+            max_context_tokens=100_000,
+            context_summary_max_chars=1000,
+            idle_compact_after_minutes=15,
+            auto_compact_recent_messages=8,
+        ),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    result = asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert result.content == "final: next"
+    assert len(provider.calls) == 2
+    main_messages = provider.calls[-1]["messages"]
+    assert main_messages[0] == {
+        "role": "system",
+        "content": "Summary of earlier conversation:\ncompressed old turns",
+    }
+    assert not any(message.get("content") == "old question 0" for message in main_messages)
+    assert {"role": "user", "content": "old question 2"} in main_messages
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages[:2]] == ["old question 2", "old answer 2"]
+    assert len(reloaded.messages) == 10
+    assert "auto_compact_pending_summary" not in reloaded.metadata
+    assert reloaded.metadata["context_summary"]["content"] == "compressed old turns"
+    assert reloaded.metadata["context_summary"]["covered_message_count"] == 0
+
+    history = [
+        json.loads(line)
+        for line in (tmp_path / "memory" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert history[0]["source"] == "compact"
+    assert history[0]["content"] == "compressed old turns"
+    assert not (tmp_path / "memory" / "MEMORY.md").exists()
+
+
+def test_run_waits_for_in_progress_background_auto_compact(tmp_path):
+    seed_manager = SessionManager(tmp_path)
+    _seed_plain_turns(
+        seed_manager,
+        [(f"old question {index}", f"old answer {index}") for index in range(6)],
+    )
+    _set_saved_session_updated_at(tmp_path, SESSION_KEY, datetime.now() - timedelta(minutes=20))
+    provider = SlowBudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(
+            system_prompt="",
+            max_context_messages=100,
+            max_context_tokens=100_000,
+            context_summary_max_chars=1000,
+            idle_compact_after_minutes=15,
+            auto_compact_recent_messages=8,
+        ),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    async def scenario():
+        compact_task = asyncio.create_task(loop.auto_compact.compact_session(SESSION_KEY))
+        await provider.summary_started.wait()
+        run_task = asyncio.create_task(loop.run("next", session_key=SESSION_KEY))
+        await asyncio.sleep(0)
+        waiting_before_release = not run_task.done()
+        provider.release_summary.set()
+        result = await run_task
+        await compact_task
+        return waiting_before_release, result
+
+    waiting_before_release, result = asyncio.run(scenario())
+
+    assert waiting_before_release is True
+    assert result.content == "final: next"
+    main_messages = provider.calls[-1]["messages"]
+    assert main_messages[0] == {
+        "role": "system",
+        "content": "Summary of earlier conversation:\ncompressed old turns",
+    }
+    assert not any(message.get("content") == "old question 0" for message in main_messages)
+
+
+def test_run_does_not_auto_compact_when_disabled(tmp_path):
+    seed_manager = SessionManager(tmp_path)
+    _seed_plain_turns(seed_manager, [(f"old question {index}", f"old answer {index}") for index in range(6)])
+    _set_saved_session_updated_at(tmp_path, SESSION_KEY, datetime.now() - timedelta(minutes=20))
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=100, max_context_tokens=100_000),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) == 1
+    assert {"role": "user", "content": "old question 0"} in provider.calls[0]["messages"]
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert "context_summary" not in reloaded.metadata
+    assert not (tmp_path / "memory" / "history.jsonl").exists()
+
+
+def test_run_consumes_pending_auto_compact_summary_after_restart(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = _seed_plain_turns(manager, [("recent question", "recent answer")])
+    session.metadata["auto_compact_pending_summary"] = {
+        "content": "archived idle summary",
+        "updated_at": "2026-01-01T00:00:00",
+        "token_estimate": 4,
+    }
+    manager.save(session)
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=100, max_context_tokens=100_000),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0] == {
+        "role": "system",
+        "content": "Summary of earlier conversation:\narchived idle summary",
+    }
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert "auto_compact_pending_summary" not in reloaded.metadata
+    assert reloaded.metadata["context_summary"]["content"] == "archived idle summary"
+    assert reloaded.metadata["context_summary"]["covered_message_count"] == 0
+
+
+def test_auto_compact_removes_already_covered_raw_messages_without_memory_write(tmp_path):
+    seed_manager = SessionManager(tmp_path)
+    session = _seed_plain_turns(
+        seed_manager,
+        [
+            ("covered question", "covered answer"),
+            ("old question", "old answer"),
+            ("recent question", "recent answer"),
+        ],
+    )
+    session.metadata["context_summary"] = {
+        "content": "saved summary",
+        "covered_message_count": 2,
+        "updated_at": "2026-01-01T00:00:00",
+        "token_estimate": 3,
+    }
+    seed_manager.save(session)
+    _set_saved_session_updated_at(tmp_path, SESSION_KEY, datetime.now() - timedelta(minutes=20))
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(
+            system_prompt="",
+            max_context_messages=100,
+            max_context_tokens=100_000,
+            idle_compact_after_minutes=15,
+            auto_compact_recent_messages=8,
+        ),
+        session_manager=SessionManager(tmp_path),
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) == 1
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages[:2]] == ["old question", "old answer"]
+    assert reloaded.metadata["context_summary"]["content"] == "saved summary"
+    assert reloaded.metadata["context_summary"]["covered_message_count"] == 0
+    assert not (tmp_path / "memory" / "history.jsonl").exists()
+    assert not (tmp_path / "memory" / "MEMORY.md").exists()
 
 
 def test_run_summarizes_old_turns_when_token_budget_exceeded(tmp_path):

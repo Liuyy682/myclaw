@@ -5,6 +5,8 @@ import sys
 import os
 import json
 
+import pytest
+
 from myclaw import DispatcherRuntime
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
@@ -85,6 +87,27 @@ def test_cli_single_turn_accepts_session_option(tmp_path):
 
     assert (tmp_path / "workspace" / "sessions" / "cli_work.jsonl").exists()
     assert not (tmp_path / "workspace" / "sessions" / "cli_direct.jsonl").exists()
+
+
+def test_build_agent_loop_reads_idle_compact_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_IDLE_COMPACT_AFTER_MINUTES", "15")
+
+    loop = build_agent_loop()
+
+    assert loop.config.idle_compact_after_minutes == 15
+
+
+def test_build_agent_loop_rejects_invalid_idle_compact_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_IDLE_COMPACT_AFTER_MINUTES", "bad")
+
+    with pytest.raises(ValueError, match="MYCLAW_IDLE_COMPACT_AFTER_MINUTES"):
+        build_agent_loop()
 
 
 class ProgressThenFinalDispatcher:

@@ -74,6 +74,27 @@ class ContextBudgetManager:
         self.provider = provider
         self.context_builder = context_builder
 
+    async def summarize_archive(
+        self,
+        existing_summary: str,
+        messages: list[Message],
+        config: AgentConfig,
+        *,
+        model: str,
+    ) -> str:
+        estimator = TokenEstimator(model)
+        return await self._summarize_messages(existing_summary, messages, config, estimator)
+
+    def store_summary(
+        self,
+        session: Any,
+        content: str,
+        covered_message_count: int,
+        *,
+        model: str,
+    ) -> None:
+        self._store_summary(session, content, covered_message_count, TokenEstimator(model))
+
     async def ensure_budget(
         self,
         session: Any,

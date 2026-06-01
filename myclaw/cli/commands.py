@@ -19,6 +19,7 @@ from myclaw.config import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     FAKE_PROVIDER_MODEL,
+    IDLE_COMPACT_AFTER_MINUTES_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_BASE_URL_ENV_VAR,
     OPENAI_MODEL_ENV_VAR,
@@ -35,6 +36,7 @@ def build_agent_loop() -> AgentLoop:
     session_manager = SessionManager()
     tool_registry = build_default_tool_registry(Path.cwd(), memory_workspace=session_manager.workspace)
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
+    idle_compact_after_minutes = _env_int(IDLE_COMPACT_AFTER_MINUTES_ENV_VAR, default=0)
     api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:
         provider = OpenAICompatibleProvider(
@@ -44,16 +46,34 @@ def build_agent_loop() -> AgentLoop:
         )
         return AgentLoop(
             provider,
-            AgentConfig(model=model, auto_title=True),
+            AgentConfig(
+                model=model,
+                auto_title=True,
+                idle_compact_after_minutes=idle_compact_after_minutes,
+            ),
             session_manager=session_manager,
             tool_registry=tool_registry,
         )
     return AgentLoop(
         FakeProvider(),
-        AgentConfig(model=FAKE_PROVIDER_MODEL, auto_title=True),
+        AgentConfig(
+            model=FAKE_PROVIDER_MODEL,
+            auto_title=True,
+            idle_compact_after_minutes=idle_compact_after_minutes,
+        ),
         session_manager=session_manager,
         tool_registry=tool_registry,
     )
+
+
+def _env_int(name: str, *, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
 
 
 def build_dispatcher() -> AgentDispatcher:

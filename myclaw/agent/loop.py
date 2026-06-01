@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from myclaw.agent.autocompact import AutoCompactManager
 from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetManager, ContextBuilder
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
@@ -43,11 +44,22 @@ class AgentLoop:
             raise ValueError("context_summary_max_chars must be at least 1")
         if self.config.context_summary_chunk_tokens < 1:
             raise ValueError("context_summary_chunk_tokens must be at least 1")
+        if self.config.idle_compact_after_minutes < 0:
+            raise ValueError("idle_compact_after_minutes must be at least 0")
+        if self.config.auto_compact_recent_messages < 1:
+            raise ValueError("auto_compact_recent_messages must be at least 1")
         self.context_builder = ContextBuilder()
         self.context_budget = ContextBudgetManager(provider, self.context_builder)
         self.runner = AgentRunner(provider)
         self.session_manager = session_manager
         self.memory_store = MemoryStore(session_manager.workspace)
+        self.auto_compact = AutoCompactManager(
+            session_manager,
+            self.context_budget,
+            self.memory_store,
+            self.config,
+            model=self.config.model or self.provider.model,
+        )
         self.tool_registry = tool_registry
 
     async def run(
@@ -65,6 +77,8 @@ class AgentLoop:
         session = self.session_manager.get_or_create(session_key)
         if self._restore_incomplete_turn(session):
             self.session_manager.save(session)
+        if await self.auto_compact.prepare_session(session_key):
+            session = self.session_manager.get_or_create(session_key)
         memory_text = self.memory_store.read_memory()
         if await self.context_budget.ensure_budget(
             session,

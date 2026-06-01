@@ -17,6 +17,7 @@ class AgentDispatcher:
     """Continuously bridge inbound bus messages to outbound agent responses."""
 
     _CONTROL_COMMANDS = {"/clear", "/status", "/stop"}
+    _AUTO_COMPACT_IDLE_TICK_SECONDS = 1.0
 
     def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
         self.bus = bus
@@ -28,7 +29,14 @@ class AgentDispatcher:
     async def run(self) -> None:
         try:
             while True:
-                msg = await self.bus.consume_inbound()
+                try:
+                    msg = await asyncio.wait_for(
+                        self.bus.consume_inbound(),
+                        timeout=self._AUTO_COMPACT_IDLE_TICK_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    self._check_auto_compact()
+                    continue
                 task = asyncio.create_task(self._process_message(msg))
                 self._active_tasks.add(task)
                 task.add_done_callback(self._active_tasks.discard)
@@ -43,6 +51,20 @@ class AgentDispatcher:
             return
 
         await self._process_agent_message(msg)
+
+    def _check_auto_compact(self) -> None:
+        auto_compact = getattr(self.loop, "auto_compact", None)
+        if auto_compact is None:
+            return
+        auto_compact.check_expired(
+            self._schedule_background,
+            active_session_keys=self._session_states.keys(),
+        )
+
+    def _schedule_background(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
 
     async def _process_agent_message(self, msg: InboundMessage) -> None:
         state = self._retain_session_state(msg.session_key)
