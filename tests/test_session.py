@@ -1,7 +1,19 @@
 import json
 from datetime import datetime
 
-from myclaw.session import Session, SessionManager
+from myclaw.config import WORKSPACE_ENV_VAR
+from myclaw.session import Session, SessionManager, get_default_workspace
+
+
+def test_default_workspace_uses_env_var_or_expanded_home(tmp_path, monkeypatch):
+    monkeypatch.delenv(WORKSPACE_ENV_VAR, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    assert get_default_workspace() == tmp_path / "home" / ".myclaw" / "workspace"
+
+    monkeypatch.setenv(WORKSPACE_ENV_VAR, str(tmp_path / "custom"))
+
+    assert get_default_workspace() == tmp_path / "custom"
 
 
 def test_save_creates_jsonl_with_metadata_and_messages(tmp_path):

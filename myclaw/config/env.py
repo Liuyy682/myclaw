@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from myclaw.config.settings import ENV_FILE_VAR
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ENV_FILE_VAR = "MYCLAW_ENV_FILE"
 
 
 def load_env_file(path: Path | None = None) -> None:

@@ -18,9 +18,9 @@ class AgentRunner:
 
         for iteration in range(spec.max_iterations):
             try:
-                response = await self.provider.complete(
+                response = await self._complete(
+                    spec,
                     [dict(message) for message in working_messages],
-                    tools=self._tool_definitions(spec.tools),
                 )
             except Exception as exc:
                 error = str(exc)
@@ -129,6 +129,17 @@ class AgentRunner:
         if registry is None or len(registry) == 0:
             return None
         return registry.definitions()
+
+    async def _complete(self, spec: AgentRunSpec, messages: list[Message]) -> str | LLMResponse:
+        tools = self._tool_definitions(spec.tools)
+        stream_complete = getattr(self.provider, "stream_complete", None)
+        if spec.stream_callback is not None and callable(stream_complete):
+            return await stream_complete(
+                messages,
+                tools=tools,
+                delta_callback=spec.stream_callback,
+            )
+        return await self.provider.complete(messages, tools=tools)
 
     @staticmethod
     async def _emit_checkpoint(

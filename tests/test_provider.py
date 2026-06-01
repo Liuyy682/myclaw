@@ -23,6 +23,24 @@ class FakeHTTPResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class FakeHTTPStreamResponse:
+    def __init__(self, lines):
+        self.lines = [line.encode("utf-8") for line in lines]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+def _stream_line(payload):
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 def test_openai_compatible_provider_builds_chat_completion_request(monkeypatch):
     captured = {}
 
@@ -162,3 +180,95 @@ def test_openai_compatible_provider_raises_readable_http_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="LLM request failed: HTTP 401 Unauthorized"):
         asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+
+
+def test_openai_compatible_provider_streams_text_deltas(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeHTTPStreamResponse(
+            [
+                _stream_line({"choices": [{"delta": {"content": "hello"}}]}),
+                _stream_line({"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]}),
+                "data: [DONE]\n\n",
+            ]
+        )
+
+    async def record_delta(delta):
+        deltas.append(delta)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+    deltas = []
+
+    content = asyncio.run(
+        provider.stream_complete([{"role": "user", "content": "hello"}], delta_callback=record_delta)
+    )
+
+    assert content == "hello world"
+    assert deltas == ["hello", " world"]
+    assert captured["body"]["stream"] is True
+
+
+def test_openai_compatible_provider_streams_tool_call_deltas(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return FakeHTTPStreamResponse(
+            [
+                _stream_line(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_add",
+                                            "type": "function",
+                                            "function": {"name": "add", "arguments": '{"a": '},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                _stream_line(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {"arguments": '2, "b": 3}'},
+                                        }
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]\n\n",
+            ]
+        )
+
+    async def record_delta(delta):
+        deltas.append(delta)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+    deltas = []
+
+    response = asyncio.run(
+        provider.stream_complete([{"role": "user", "content": "add"}], tools=[], delta_callback=record_delta)
+    )
+
+    assert deltas == []
+    assert isinstance(response, LLMResponse)
+    assert response.final is False
+    assert response.stop_reason == "tool_calls"
+    assert response.tool_calls == [
+        ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3}),
+    ]

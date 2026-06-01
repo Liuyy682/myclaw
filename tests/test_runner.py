@@ -70,6 +70,36 @@ class NeverFinalProvider:
         return LLMResponse(content=f"step {self.calls}", final=False, stop_reason="continue")
 
 
+class StreamingProvider:
+    model = "stream"
+
+    def __init__(self):
+        self.complete_calls = 0
+        self.stream_calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.complete_calls += 1
+        return "complete fallback"
+
+    async def stream_complete(self, messages, *, tools=None, delta_callback=None):
+        self.stream_calls += 1
+        if delta_callback is not None:
+            await delta_callback("hel")
+            await delta_callback("lo")
+        return "hello"
+
+
+class CompleteOnlyProvider:
+    model = "complete"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        return "complete only"
+
+
 def test_runner_stops_at_max_iterations():
     provider = NeverFinalProvider()
     runner = AgentRunner(provider)
@@ -87,6 +117,47 @@ def test_runner_stops_at_max_iterations():
         {"role": "assistant", "content": "step 1"},
         {"role": "assistant", "content": "step 2"},
     ]
+
+
+def test_runner_uses_streaming_provider_when_stream_callback_is_available():
+    provider = StreamingProvider()
+    runner = AgentRunner(provider)
+    deltas = []
+
+    async def record_delta(delta):
+        deltas.append(delta)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "hello"}],
+        model="stream",
+        max_iterations=1,
+        stream_callback=record_delta,
+    )))
+
+    assert result.content == "hello"
+    assert deltas == ["hel", "lo"]
+    assert provider.stream_calls == 1
+    assert provider.complete_calls == 0
+
+
+def test_runner_falls_back_to_complete_when_provider_has_no_streaming_method():
+    provider = CompleteOnlyProvider()
+    runner = AgentRunner(provider)
+    deltas = []
+
+    async def record_delta(delta):
+        deltas.append(delta)
+
+    result = asyncio.run(runner.run(AgentRunSpec(
+        messages=[{"role": "user", "content": "hello"}],
+        model="complete",
+        max_iterations=1,
+        stream_callback=record_delta,
+    )))
+
+    assert result.content == "complete only"
+    assert deltas == []
+    assert provider.calls == 1
 
 
 class FailingProvider:

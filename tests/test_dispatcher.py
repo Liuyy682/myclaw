@@ -47,6 +47,20 @@ class CapturingLoop:
         return type("Result", (), {"content": f"{session_key}: {text}"})()
 
 
+class StreamingLoop:
+    def __init__(self):
+        self.calls = []
+        self.saw_stream_callback = None
+
+    async def run(self, text, *, session_key, progress_callback=None, stream_callback=None):
+        self.calls.append((text, session_key))
+        self.saw_stream_callback = stream_callback is not None
+        if stream_callback is not None:
+            await stream_callback("hel")
+            await stream_callback("lo")
+        return type("Result", (), {"content": "hello"})()
+
+
 def test_dispatcher_run_passes_message_session_key_to_loop():
     bus = MessageBus()
     loop = CapturingLoop()
@@ -91,6 +105,102 @@ def test_dispatcher_run_respects_session_key_override():
 
     assert loop.calls == [("hello", "shared:session")]
     assert outbound.content == "shared:session: hello"
+
+
+def test_dispatcher_publishes_stream_deltas_for_gateway_channel():
+    bus = MessageBus()
+    loop = StreamingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="gateway",
+                sender_id="user",
+                chat_id="direct",
+                content="hello",
+                metadata={"request_id": "req-1"},
+            )
+        )
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        final = await bus.consume_outbound()
+        await _stop(task)
+        return first, second, final
+
+    first, second, final = asyncio.run(scenario())
+
+    assert loop.saw_stream_callback is True
+    assert first.event_type == "message_delta"
+    assert first.terminal is False
+    assert first.content == "hel"
+    assert first.metadata == {"request_id": "req-1", "session_key": "gateway:direct"}
+    assert second.event_type == "message_delta"
+    assert second.terminal is False
+    assert second.content == "lo"
+    assert final.event_type == "message"
+    assert final.terminal is True
+    assert final.content == "hello"
+
+
+def test_dispatcher_does_not_stream_cli_channel():
+    bus = MessageBus()
+    loop = StreamingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="hello")
+        )
+        outbound = await bus.consume_outbound()
+        await _stop(task)
+        return outbound
+
+    outbound = asyncio.run(scenario())
+
+    assert loop.saw_stream_callback is False
+    assert outbound.event_type == "message"
+    assert outbound.terminal is True
+    assert outbound.content == "hello"
+
+
+def test_dispatcher_streams_cli_channel_when_requested_by_metadata():
+    bus = MessageBus()
+    loop = StreamingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="cli",
+                sender_id="user",
+                chat_id="direct",
+                content="hello",
+                metadata={"stream": True},
+            )
+        )
+        first = await bus.consume_outbound()
+        second = await bus.consume_outbound()
+        final = await bus.consume_outbound()
+        await _stop(task)
+        return first, second, final
+
+    first, second, final = asyncio.run(scenario())
+
+    assert loop.saw_stream_callback is True
+    assert first.event_type == "message_delta"
+    assert first.terminal is False
+    assert first.content == "hel"
+    assert first.metadata == {"stream": True, "session_key": "cli:direct"}
+    assert second.event_type == "message_delta"
+    assert second.terminal is False
+    assert second.content == "lo"
+    assert final.event_type == "message"
+    assert final.terminal is True
+    assert final.content == "hello"
 
 
 class BlockingLoop:

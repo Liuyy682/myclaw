@@ -11,6 +11,7 @@ from myclaw.agent import (
     AgentRunSpec,
     ProgressCallback,
     RunResult,
+    StreamCallback,
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.gateway import run_gateway
@@ -56,6 +57,7 @@ __all__ = [
     "RunResult",
     "Session",
     "SessionManager",
+    "StreamCallback",
     "Tool",
     "ToolCallRequest",
     "ToolRegistry",

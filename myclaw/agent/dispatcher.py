@@ -52,11 +52,13 @@ class AgentDispatcher:
                 if current_task is not None:
                     self._active_session_tasks[msg.session_key] = current_task
                 try:
-                    result = await self.loop.run(
-                        msg.content,
-                        session_key=msg.session_key,
-                        progress_callback=lambda payload: self._publish_progress(msg, payload),
-                    )
+                    run_kwargs = {
+                        "session_key": msg.session_key,
+                        "progress_callback": lambda payload: self._publish_progress(msg, payload),
+                    }
+                    if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
+                        run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta)
+                    result = await self.loop.run(msg.content, **run_kwargs)
                     content = result.content
                 except Exception as exc:
                     content = f"Error: {exc}"
@@ -150,6 +152,20 @@ class AgentDispatcher:
                 metadata=metadata,
                 terminal=False,
                 event_type="tool_progress",
+            )
+        )
+
+    async def _publish_message_delta(self, msg: InboundMessage, delta: str) -> None:
+        metadata = dict(msg.metadata)
+        metadata["session_key"] = msg.session_key
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=delta,
+                metadata=metadata,
+                terminal=False,
+                event_type="message_delta",
             )
         )
 

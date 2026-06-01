@@ -63,6 +63,33 @@ class ProgressDispatcher:
         await asyncio.Event().wait()
 
 
+class DeltaDispatcher:
+    def __init__(self):
+        self.bus = MessageBus()
+
+    async def run(self):
+        await self.bus.consume_inbound()
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="gateway",
+                chat_id="direct",
+                content="hel",
+                metadata={"request_id": "req-delta"},
+                terminal=False,
+                event_type="message_delta",
+            )
+        )
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="gateway",
+                chat_id="direct",
+                content="hello",
+                metadata={"request_id": "req-delta"},
+            )
+        )
+        await asyncio.Event().wait()
+
+
 def _history_dispatcher(manager):
     dispatcher = RecordingDispatcher()
     dispatcher.loop = SimpleNamespace(session_manager=manager)
@@ -169,6 +196,8 @@ def test_gateway_root_serves_static_webui():
     assert "fetch('/api/sessions'" in body
     assert "currentSessionKey" in body
     assert "session_key: currentSessionKey" in body
+    assert "message_delta" in body
+    assert "appendAssistantDelta" in body
 
 
 def test_gateway_post_message_publishes_inbound_and_streams_terminal_sse_event():
@@ -342,6 +371,36 @@ def test_gateway_sse_streams_tool_progress_and_final_events():
         "content": "done",
         "terminal": True,
         "metadata": {"request_id": "req-progress"},
+    }
+
+
+def test_gateway_sse_streams_message_delta_before_final_event():
+    async def scenario(server):
+        reader, writer = await _open_sse(server.port, chat_id="direct")
+        await _request(server.port, "POST", "/api/messages", json.dumps({"content": "stream"}))
+        delta = await _read_sse_json(reader)
+        final = await _read_sse_json(reader)
+        writer.close()
+        await writer.wait_closed()
+        return delta, final
+
+    delta, final = asyncio.run(_with_server(DeltaDispatcher(), scenario))
+
+    assert delta == {
+        "type": "message_delta",
+        "id": "req-delta",
+        "chat_id": "direct",
+        "content": "hel",
+        "terminal": False,
+        "metadata": {"request_id": "req-delta"},
+    }
+    assert final == {
+        "type": "message",
+        "id": "req-delta",
+        "chat_id": "direct",
+        "content": "hello",
+        "terminal": True,
+        "metadata": {"request_id": "req-delta"},
     }
 
 

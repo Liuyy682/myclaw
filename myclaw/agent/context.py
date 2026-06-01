@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from myclaw.agent.types import AgentConfig, Message
+from myclaw.config import TOOL_RESULT_TRUNCATED_TEMPLATE
 
 MISSING_TOOL_RESULT_CONTENT = "[tool result unavailable in persisted history]"
-TOOL_RESULT_TRUNCATED_TEMPLATE = "[tool result truncated: {omitted} chars omitted]"
 
 
 class ContextBuilder:

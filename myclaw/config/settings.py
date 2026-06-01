@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+ENV_FILE_VAR = "MYCLAW_ENV_FILE"
+WORKSPACE_ENV_VAR = "MYCLAW_WORKSPACE"
+
+OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+OPENAI_BASE_URL_ENV_VAR = "OPENAI_BASE_URL"
+OPENAI_MODEL_ENV_VAR = "OPENAI_MODEL"
+
+DEFAULT_WORKSPACE_PATH = Path("~/.myclaw/workspace")
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_TIMEOUT_SECONDS = 120
+
+DEFAULT_FAKE_PROVIDER_PREFIX = "Echo"
+FAKE_PROVIDER_MODEL = "fake"
+
+DEFAULT_SYSTEM_PROMPT = "You are a helpful personal assistant."
+DEFAULT_AGENT_MODEL = ""
+DEFAULT_AGENT_MAX_TURNS = 4
+DEFAULT_AGENT_RUN_MAX_ITERATIONS = DEFAULT_AGENT_MAX_TURNS
+DEFAULT_MAX_TOOL_RESULT_CHARS = 16_000
+DEFAULT_AGENT_AUTO_TITLE = False
+
+CLI_EXIT_COMMANDS = frozenset({"exit", "quit"})
+DEFAULT_CLI_SESSION_NAME = "direct"
+CLI_SESSION_PREFIX = "cli:"
+
+GATEWAY_CHANNEL = "gateway"
+DEFAULT_GATEWAY_CHAT_ID = "direct"
+DEFAULT_GATEWAY_HOST = "127.0.0.1"
+DEFAULT_GATEWAY_PORT = 8765
+GATEWAY_MAX_BODY_BYTES = 64 * 1024
+
+TOOL_RESULT_TRUNCATED_TEMPLATE = "[tool result truncated: {omitted} chars omitted]"
+
+FILESYSTEM_BLOCKED_DEVICE_PATHS = frozenset(
+    {
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/full",
+        "/dev/stdin",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/tty",
+        "/dev/console",
+        "/dev/fd/0",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    }
+)
+FILESYSTEM_IGNORED_DIRS = frozenset({".git", "node_modules", ".pytest_cache", "__pycache__"})
+READ_FILE_DEFAULT_LIMIT = 2000
+LIST_DIR_DEFAULT_MAX_ENTRIES = 200
+GREP_DEFAULT_MAX_MATCHES = 100
+GLOB_DEFAULT_MAX_MATCHES = 200
+
+__all__ = [name for name in globals() if name.isupper()]

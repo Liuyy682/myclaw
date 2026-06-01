@@ -10,27 +10,36 @@ from pathlib import Path
 
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherRuntime
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
-from myclaw.config.env import load_env_file
-from myclaw.gateway import DEFAULT_GATEWAY_HOST, DEFAULT_GATEWAY_PORT, run_gateway
+from myclaw.config import (
+    CLI_EXIT_COMMANDS,
+    CLI_SESSION_PREFIX,
+    DEFAULT_CLI_SESSION_NAME,
+    DEFAULT_GATEWAY_HOST,
+    DEFAULT_GATEWAY_PORT,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    FAKE_PROVIDER_MODEL,
+    OPENAI_API_KEY_ENV_VAR,
+    OPENAI_BASE_URL_ENV_VAR,
+    OPENAI_MODEL_ENV_VAR,
+    load_env_file,
+)
+from myclaw.gateway import run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
-
-EXIT_COMMANDS = {"exit", "quit"}
-DEFAULT_CLI_SESSION_NAME = "direct"
-CLI_SESSION_PREFIX = "cli:"
 
 
 def build_agent_loop() -> AgentLoop:
     load_env_file()
     session_manager = SessionManager()
     tool_registry = build_default_tool_registry(Path.cwd())
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-    api_key = os.environ.get("OPENAI_API_KEY")
+    model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
+    api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:
         provider = OpenAICompatibleProvider(
             api_key=api_key,
-            base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            base_url=os.environ.get(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL),
             model=model,
         )
         return AgentLoop(
@@ -41,7 +50,7 @@ def build_agent_loop() -> AgentLoop:
         )
     return AgentLoop(
         FakeProvider(),
-        AgentConfig(model="fake", auto_title=True),
+        AgentConfig(model=FAKE_PROVIDER_MODEL, auto_title=True),
         session_manager=session_manager,
         tool_registry=tool_registry,
     )
@@ -110,7 +119,7 @@ async def run_interactive(
                     print()
                     await _wait_for_pending_output(pending)
                     return
-                if text.strip().lower() in EXIT_COMMANDS:
+                if text.strip().lower() in CLI_EXIT_COMMANDS:
                     await _wait_for_pending_output(pending)
                     return
                 if not text.strip():
@@ -130,6 +139,7 @@ async def run_interactive(
                         sender_id="user",
                         chat_id=session_name,
                         content=text,
+                        metadata={"stream": True},
                     )
                 )
                 await asyncio.sleep(0)
@@ -141,12 +151,27 @@ async def run_interactive(
 
 
 async def _print_interactive_output(dispatcher: AgentDispatcher, pending: dict) -> None:
+    streaming_assistant = False
     while True:
         outbound = await dispatcher.bus.consume_outbound()
-        if outbound.event_type == "control":
+        if outbound.event_type == "message_delta":
+            if not streaming_assistant:
+                print("Assistant: ", end="", flush=True)
+                streaming_assistant = True
+            print(outbound.content, end="", flush=True)
+        elif outbound.event_type == "control":
+            if streaming_assistant:
+                print()
+                streaming_assistant = False
             print(outbound.content)
         elif outbound.event_type == "tool_progress":
+            if streaming_assistant:
+                print()
+                streaming_assistant = False
             print(f"Progress: {outbound.content}")
+        elif streaming_assistant:
+            print()
+            streaming_assistant = False
         else:
             print(f"Assistant: {outbound.content}")
         if outbound.terminal:

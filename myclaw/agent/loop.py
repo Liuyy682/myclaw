@@ -5,7 +5,7 @@ from typing import Any
 
 from myclaw.agent.context import ContextBuilder
 from myclaw.agent.runner import AgentRunner
-from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult
+from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import ToolRegistry
@@ -45,6 +45,7 @@ class AgentLoop:
         *,
         session_key: str,
         progress_callback: ProgressCallback | None = None,
+        stream_callback: StreamCallback | None = None,
     ) -> RunResult:
         user_text = text.strip()
         if not user_text:
@@ -65,6 +66,7 @@ class AgentLoop:
                 max_tool_result_chars=self.config.max_tool_result_chars,
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
                 progress_callback=progress_callback,
+                stream_callback=stream_callback,
             )
         )
         self._persist_turn(session, result.messages)

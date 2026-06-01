@@ -29,10 +29,12 @@ http://127.0.0.1:8765/
 ```
 
 The WebUI posts messages to `/api/messages`, receives streamed replies from
-`/api/events`, and lists saved conversations from `/api/sessions`. Selecting a
-history entry loads its user/assistant messages and sends future turns with that
-entry's `session_key`, so gateway sessions and CLI sessions can both be resumed.
-To send the literal one-shot message `gateway`, use `python -m myclaw -- gateway`.
+`/api/events`, and lists saved conversations from `/api/sessions`. Assistant
+output streams as non-terminal `message_delta` SSE events followed by one
+terminal `message` event containing the complete response. Selecting a history
+entry loads its user/assistant messages and sends future turns with that entry's
+`session_key`, so gateway sessions and CLI sessions can both be resumed. To send
+the literal one-shot message `gateway`, use `python -m myclaw -- gateway`.
 
 Interactive commands:
 

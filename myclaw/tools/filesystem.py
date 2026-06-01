@@ -4,26 +4,16 @@ import re
 from pathlib import Path
 from typing import Any
 
+from myclaw.config import (
+    FILESYSTEM_BLOCKED_DEVICE_PATHS,
+    FILESYSTEM_IGNORED_DIRS,
+    GLOB_DEFAULT_MAX_MATCHES,
+    GREP_DEFAULT_MAX_MATCHES,
+    LIST_DIR_DEFAULT_MAX_ENTRIES,
+    READ_FILE_DEFAULT_LIMIT,
+)
 from myclaw.tools.base import Tool
 from myclaw.tools.registry import ToolRegistry
-
-_BLOCKED_DEVICE_PATHS = frozenset(
-    {
-        "/dev/zero",
-        "/dev/random",
-        "/dev/urandom",
-        "/dev/full",
-        "/dev/stdin",
-        "/dev/stdout",
-        "/dev/stderr",
-        "/dev/tty",
-        "/dev/console",
-        "/dev/fd/0",
-        "/dev/fd/1",
-        "/dev/fd/2",
-    }
-)
-_IGNORED_DIRS = frozenset({".git", "node_modules", ".pytest_cache", "__pycache__"})
 
 
 def build_default_tool_registry(workspace: Path | str | None = None) -> ToolRegistry:
@@ -52,7 +42,11 @@ def _is_blocked_device(path: str | Path) -> bool:
         resolved = str(Path(raw).resolve())
     except (OSError, ValueError):
         resolved = raw
-    return raw in _BLOCKED_DEVICE_PATHS or resolved in _BLOCKED_DEVICE_PATHS or resolved.startswith("/dev/")
+    return (
+        raw in FILESYSTEM_BLOCKED_DEVICE_PATHS
+        or resolved in FILESYSTEM_BLOCKED_DEVICE_PATHS
+        or resolved.startswith("/dev/")
+    )
 
 
 class _FilesystemTool(Tool):
@@ -84,7 +78,7 @@ class _FilesystemTool(Tool):
             relative = path.relative_to(self._workspace)
         except ValueError:
             return True
-        return any(part in _IGNORED_DIRS for part in relative.parts)
+        return any(part in FILESYSTEM_IGNORED_DIRS for part in relative.parts)
 
     def _is_safe_existing_path(self, path: Path) -> bool:
         try:
@@ -105,8 +99,6 @@ class _FilesystemTool(Tool):
 
 
 class ReadFileTool(_FilesystemTool):
-    _DEFAULT_LIMIT = 2000
-
     @property
     def name(self) -> str:
         return "read_file"
@@ -150,7 +142,7 @@ class ReadFileTool(_FilesystemTool):
 
         try:
             start = max(1, int(offset))
-            count = self._DEFAULT_LIMIT if limit is None else max(1, int(limit))
+            count = READ_FILE_DEFAULT_LIMIT if limit is None else max(1, int(limit))
         except (TypeError, ValueError):
             return "Error: offset and limit must be integers"
 
@@ -162,8 +154,6 @@ class ReadFileTool(_FilesystemTool):
 
 
 class ListDirTool(_FilesystemTool):
-    _DEFAULT_MAX_ENTRIES = 200
-
     @property
     def name(self) -> str:
         return "list_dir"
@@ -187,7 +177,7 @@ class ListDirTool(_FilesystemTool):
         self,
         path: str | None = ".",
         recursive: bool = False,
-        max_entries: int = _DEFAULT_MAX_ENTRIES,
+        max_entries: int = LIST_DIR_DEFAULT_MAX_ENTRIES,
         **kwargs: Any,
     ) -> str:
         path = path or "."
@@ -219,7 +209,7 @@ class ListDirTool(_FilesystemTool):
     def _direct_entries(directory: Path) -> list[str]:
         entries = []
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
-            if child.name in _IGNORED_DIRS:
+            if child.name in FILESYSTEM_IGNORED_DIRS:
                 continue
             entries.append(f"{child.name}/" if child.is_dir() else child.name)
         return entries
@@ -229,7 +219,7 @@ class ListDirTool(_FilesystemTool):
         entries = []
         for child in sorted(directory.rglob("*"), key=lambda item: item.relative_to(directory).as_posix()):
             relative = child.relative_to(directory)
-            if any(part in _IGNORED_DIRS for part in relative.parts) or child.is_dir():
+            if any(part in FILESYSTEM_IGNORED_DIRS for part in relative.parts) or child.is_dir():
                 continue
             entries.append(relative.as_posix())
         return entries
@@ -298,8 +288,6 @@ class EditFileTool(_FilesystemTool):
 
 
 class GrepTool(_FilesystemTool):
-    _DEFAULT_MAX_MATCHES = 100
-
     @property
     def name(self) -> str:
         return "grep"
@@ -326,7 +314,7 @@ class GrepTool(_FilesystemTool):
         pattern: str | None = None,
         path: str | None = ".",
         case_sensitive: bool = True,
-        max_matches: int = _DEFAULT_MAX_MATCHES,
+        max_matches: int = GREP_DEFAULT_MAX_MATCHES,
         **kwargs: Any,
     ) -> str:
         if pattern is None:
@@ -378,8 +366,6 @@ class GrepTool(_FilesystemTool):
 
 
 class GlobTool(_FilesystemTool):
-    _DEFAULT_MAX_MATCHES = 200
-
     @property
     def name(self) -> str:
         return "glob"
@@ -404,7 +390,7 @@ class GlobTool(_FilesystemTool):
         self,
         pattern: str | None = None,
         path: str | None = ".",
-        max_matches: int = _DEFAULT_MAX_MATCHES,
+        max_matches: int = GLOB_DEFAULT_MAX_MATCHES,
         **kwargs: Any,
     ) -> str:
         if pattern is None or str(pattern) == "":

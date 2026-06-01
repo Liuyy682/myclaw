@@ -11,13 +11,14 @@ from urllib.parse import parse_qs, urlsplit
 
 from myclaw.agent import AgentDispatcher, DispatcherRuntime
 from myclaw.bus import InboundMessage, OutboundMessage
+from myclaw.config import (
+    DEFAULT_GATEWAY_CHAT_ID,
+    DEFAULT_GATEWAY_HOST,
+    DEFAULT_GATEWAY_PORT,
+    GATEWAY_CHANNEL,
+    GATEWAY_MAX_BODY_BYTES,
+)
 from myclaw.session import Session
-
-GATEWAY_CHANNEL = "gateway"
-DEFAULT_GATEWAY_CHAT_ID = "direct"
-DEFAULT_GATEWAY_HOST = "127.0.0.1"
-DEFAULT_GATEWAY_PORT = 8765
-_MAX_BODY_BYTES = 64 * 1024
 
 
 @dataclass(slots=True)
@@ -276,7 +277,7 @@ async def _read_http_request(reader: asyncio.StreamReader) -> _HttpRequest | Non
         content_length = int(length_text)
     except ValueError:
         return None
-    if content_length < 0 or content_length > _MAX_BODY_BYTES:
+    if content_length < 0 or content_length > GATEWAY_MAX_BODY_BYTES:
         return None
 
     parsed = urlsplit(target)
@@ -620,6 +621,8 @@ _WEBUI_HTML = """<!doctype html>
 	    const refreshSessions = document.querySelector('#refreshSessions');
 	    let source;
 	    let currentSessionKey = null;
+	    let streamingAssistant = null;
+	    let streamingAssistantText = '';
 
     function escapeHtml(value) {
       return value.replace(/[&<>"']/g, (char) => ({
@@ -714,152 +717,187 @@ _WEBUI_HTML = """<!doctype html>
       return output.join('');
     }
 
-	    function addRow(kind, text, markdown = false) {
-	      const row = document.createElement('div');
-	      row.className = `row ${kind}`;
-	      if (markdown) {
-	        row.innerHTML = renderMarkdown(text);
+    function setRowContent(row, text, markdown = false) {
+      if (markdown) {
+        row.innerHTML = renderMarkdown(text);
       } else {
         row.textContent = text;
       }
-	      messages.append(row);
-	      messages.scrollTop = messages.scrollHeight;
-	    }
+    }
 
-	    function currentChatId() {
-	      return chatId.value.trim() || 'direct';
-	    }
+    function addRow(kind, text, markdown = false) {
+      const row = document.createElement('div');
+      row.className = `row ${kind}`;
+      setRowContent(row, text, markdown);
+      messages.append(row);
+      messages.scrollTop = messages.scrollHeight;
+      return row;
+    }
 
-	    function chatIdForSessionKey(key) {
-	      return key.startsWith('gateway:') ? (key.slice('gateway:'.length) || 'direct') : key;
-	    }
+    function appendAssistantDelta(delta) {
+      if (!streamingAssistant) {
+        streamingAssistant = addRow('assistant', '', true);
+        streamingAssistantText = '';
+      }
+      streamingAssistantText += delta;
+      setRowContent(streamingAssistant, streamingAssistantText, true);
+      messages.scrollTop = messages.scrollHeight;
+    }
 
-	    function setActiveSession(key) {
-	      for (const item of sessions.querySelectorAll('.session-item')) {
-	        item.classList.toggle('active', item.dataset.sessionKey === key);
-	      }
-	    }
+    function finishAssistantMessage(text) {
+      if (streamingAssistant) {
+        setRowContent(streamingAssistant, text, true);
+        streamingAssistant = null;
+        streamingAssistantText = '';
+        messages.scrollTop = messages.scrollHeight;
+      } else {
+        addRow('assistant', text, true);
+      }
+    }
 
-	    function renderSessions(items) {
-	      sessions.textContent = '';
-	      if (!Array.isArray(items) || items.length === 0) {
-	        const empty = document.createElement('div');
-	        empty.className = 'history-empty';
-	        empty.textContent = 'No history';
-	        sessions.append(empty);
-	        return;
-	      }
-	      for (const session of items) {
-	        const button = document.createElement('button');
-	        button.type = 'button';
-	        button.className = 'session-item';
-	        button.dataset.sessionKey = session.key;
-	        const title = document.createElement('span');
-	        title.className = 'session-title';
-	        title.textContent = session.title || session.key;
-	        const key = document.createElement('span');
-	        key.className = 'session-key';
-	        key.textContent = session.key;
-	        const preview = document.createElement('span');
-	        preview.className = 'session-preview';
-	        preview.textContent = session.preview || session.updated_at || '';
-	        button.append(title, key, preview);
-	        button.addEventListener('click', () => loadSession(session.key));
-	        sessions.append(button);
-	      }
-	      setActiveSession(currentSessionKey);
-	    }
+    function resetStreamingAssistant() {
+      streamingAssistant = null;
+      streamingAssistantText = '';
+    }
 
-	    async function loadSessions() {
-	      try {
-	        const response = await fetch('/api/sessions');
-	        const payload = await response.json();
-	        if (!response.ok) throw new Error(payload.error || 'Could not load sessions');
-	        renderSessions(payload.sessions);
-	      } catch (error) {
-	        sessions.textContent = '';
-	        const row = document.createElement('div');
-	        row.className = 'history-empty';
-	        row.textContent = String(error);
-	        sessions.append(row);
-	      }
-	    }
+    function currentChatId() {
+      return chatId.value.trim() || 'direct';
+    }
 
-	    async function loadSession(key) {
-	      try {
-	        const response = await fetch(`/api/sessions?key=${encodeURIComponent(key)}`);
-	        const payload = await response.json();
-	        if (!response.ok) throw new Error(payload.error || 'Could not load session');
-	        currentSessionKey = payload.key;
-	        chatId.value = chatIdForSessionKey(payload.key);
-	        messages.textContent = '';
-	        for (const message of payload.messages || []) {
-	          addRow(message.role === 'user' ? 'user' : 'assistant', message.content, message.role === 'assistant');
-	        }
-	        setActiveSession(currentSessionKey);
-	        connect();
-	        content.focus();
-	      } catch (error) {
-	        addRow('error', String(error));
-	      }
-	    }
+    function chatIdForSessionKey(key) {
+      return key.startsWith('gateway:') ? (key.slice('gateway:'.length) || 'direct') : key;
+    }
 
-	    function connect() {
-	      if (source) source.close();
-	      const session = encodeURIComponent(currentChatId());
-	      source = new EventSource(`/api/events?chat_id=${session}`);
-	      source.onmessage = (event) => {
-	        const payload = JSON.parse(event.data);
-	        if (payload.type === 'tool_progress') {
-	          addRow('progress', payload.content);
+    function setActiveSession(key) {
+      for (const item of sessions.querySelectorAll('.session-item')) {
+        item.classList.toggle('active', item.dataset.sessionKey === key);
+      }
+    }
+
+    function renderSessions(items) {
+      sessions.textContent = '';
+      if (!Array.isArray(items) || items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'history-empty';
+        empty.textContent = 'No history';
+        sessions.append(empty);
+        return;
+      }
+      for (const session of items) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'session-item';
+        button.dataset.sessionKey = session.key;
+        const title = document.createElement('span');
+        title.className = 'session-title';
+        title.textContent = session.title || session.key;
+        const key = document.createElement('span');
+        key.className = 'session-key';
+        key.textContent = session.key;
+        const preview = document.createElement('span');
+        preview.className = 'session-preview';
+        preview.textContent = session.preview || session.updated_at || '';
+        button.append(title, key, preview);
+        button.addEventListener('click', () => loadSession(session.key));
+        sessions.append(button);
+      }
+      setActiveSession(currentSessionKey);
+    }
+
+    async function loadSessions() {
+      try {
+        const response = await fetch('/api/sessions');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not load sessions');
+        renderSessions(payload.sessions);
+      } catch (error) {
+        sessions.textContent = '';
+        const row = document.createElement('div');
+        row.className = 'history-empty';
+        row.textContent = String(error);
+        sessions.append(row);
+      }
+    }
+
+    async function loadSession(key) {
+      try {
+        const response = await fetch(`/api/sessions?key=${encodeURIComponent(key)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not load session');
+        currentSessionKey = payload.key;
+        chatId.value = chatIdForSessionKey(payload.key);
+        messages.textContent = '';
+        resetStreamingAssistant();
+        for (const message of payload.messages || []) {
+          addRow(message.role === 'user' ? 'user' : 'assistant', message.content, message.role === 'assistant');
+        }
+        setActiveSession(currentSessionKey);
+        connect();
+        content.focus();
+      } catch (error) {
+        addRow('error', String(error));
+      }
+    }
+
+    function connect() {
+      if (source) source.close();
+      const session = encodeURIComponent(currentChatId());
+      source = new EventSource(`/api/events?chat_id=${session}`);
+      source.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'message_delta') {
+          appendAssistantDelta(payload.content);
+        } else if (payload.type === 'tool_progress') {
+          addRow('progress', payload.content);
         } else if (payload.type === 'error') {
           addRow('error', payload.content);
         } else if (payload.type === 'control') {
           addRow('progress', payload.content);
-	        } else {
-	          addRow('assistant', payload.content, true);
-	        }
-	        if (payload.terminal) loadSessions();
-	      };
-	      source.onerror = () => addRow('error', 'Connection lost. Reconnecting...');
-	    }
+        } else {
+          finishAssistantMessage(payload.content);
+        }
+        if (payload.terminal) loadSessions();
+      };
+      source.onerror = () => addRow('error', 'Connection lost. Reconnecting...');
+    }
 
-	    refreshSessions.addEventListener('click', loadSessions);
-	    chatId.addEventListener('change', () => {
-	      currentSessionKey = null;
-	      messages.textContent = '';
-	      setActiveSession(null);
-	      connect();
-	    });
-	    composer.addEventListener('submit', async (event) => {
-	      event.preventDefault();
-	      const text = content.value.trim();
-	      if (!text) return;
-	      addRow('user', text);
+    refreshSessions.addEventListener('click', loadSessions);
+    chatId.addEventListener('change', () => {
+      currentSessionKey = null;
+      messages.textContent = '';
+      resetStreamingAssistant();
+      setActiveSession(null);
+      connect();
+    });
+    composer.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = content.value.trim();
+      if (!text) return;
+      addRow('user', text);
       content.value = '';
       send.disabled = true;
-	      try {
-	        const body = {chat_id: currentChatId(), content: text, session_key: currentSessionKey};
-	        if (!body.session_key) delete body.session_key;
-	        const response = await fetch('/api/messages', {
-	          method: 'POST',
-	          headers: {'Content-Type': 'application/json'},
-	          body: JSON.stringify(body)
-	        });
-	        if (!response.ok) {
-	          const payload = await response.json();
-	          addRow('error', payload.error || 'Request failed');
+      try {
+        const body = {chat_id: currentChatId(), content: text, session_key: currentSessionKey};
+        if (!body.session_key) delete body.session_key;
+        const response = await fetch('/api/messages', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          const payload = await response.json();
+          addRow('error', payload.error || 'Request failed');
         }
       } catch (error) {
         addRow('error', String(error));
       } finally {
         send.disabled = false;
-	        content.focus();
-	      }
-	    });
-	    loadSessions();
-	    connect();
-	    content.focus();
+        content.focus();
+      }
+    });
+    loadSessions();
+    connect();
+    content.focus();
   </script>
 </body>
 </html>

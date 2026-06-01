@@ -108,6 +108,39 @@ class ProgressThenFinalDispatcher:
         await asyncio.Event().wait()
 
 
+class StreamingCliDispatcher:
+    def __init__(self):
+        self.bus = MessageBus()
+        self.loop = type("Loop", (), {"session_manager": None})()
+        self.received = []
+
+    async def run(self):
+        msg = await self.bus.consume_inbound()
+        self.received.append((msg.chat_id, msg.content, msg.metadata))
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="cli",
+                chat_id=msg.chat_id,
+                content="hel",
+                terminal=False,
+                event_type="message_delta",
+            )
+        )
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="cli",
+                chat_id=msg.chat_id,
+                content="lo",
+                terminal=False,
+                event_type="message_delta",
+            )
+        )
+        await self.bus.publish_outbound(
+            OutboundMessage(channel="cli", chat_id=msg.chat_id, content="hello")
+        )
+        await asyncio.Event().wait()
+
+
 def test_dispatch_text_waits_for_terminal_outbound_message():
     dispatcher = ProgressThenFinalDispatcher()
 
@@ -157,6 +190,18 @@ def test_dispatch_text_uses_existing_runtime_for_multiple_messages():
     assert dispatcher.received == [("direct", "first"), ("direct", "second")]
     assert first.content == "ack: first"
     assert second.content == "ack: second"
+
+
+def test_interactive_cli_streams_message_deltas_inline(monkeypatch, capsys):
+    dispatcher = StreamingCliDispatcher()
+    inputs = iter(["hello", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    asyncio.run(run_interactive(dispatcher, session_name="direct"))
+
+    output = capsys.readouterr().out
+    assert output == "Assistant: hello\n"
+    assert dispatcher.received == [("direct", "hello", {"stream": True})]
 
 
 def test_interactive_cli_keeps_one_dispatcher_running_for_multiple_inputs(monkeypatch):

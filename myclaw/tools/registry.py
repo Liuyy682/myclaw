@@ -4,9 +4,8 @@ import json
 from typing import Any
 
 from myclaw.providers.base import ToolCallRequest
+from myclaw.config import TOOL_RESULT_TRUNCATED_TEMPLATE
 from myclaw.tools.base import Tool
-
-TOOL_RESULT_TRUNCATED_TEMPLATE = "[tool result truncated: {omitted} chars omitted]"
 
 
 class ToolRegistry:

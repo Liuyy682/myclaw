@@ -10,15 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from myclaw.agent.types import Message
-
-WORKSPACE_ENV_VAR = "MYCLAW_WORKSPACE"
+from myclaw.config import DEFAULT_WORKSPACE_PATH, WORKSPACE_ENV_VAR
 
 
 def get_default_workspace() -> Path:
     configured = os.environ.get(WORKSPACE_ENV_VAR)
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".myclaw" / "workspace"
+    return DEFAULT_WORKSPACE_PATH.expanduser()
 
 
 @dataclass(slots=True)
