@@ -9,6 +9,7 @@ from myclaw.tools.filesystem import (
     WriteFileTool,
     build_default_tool_registry,
 )
+from myclaw.tools.memory import MemoryWriteTool
 from myclaw.tools.registry import ToolRegistry
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "ListDirTool",
+    "MemoryWriteTool",
     "ReadFileTool",
     "Tool",
     "ToolCallRequest",

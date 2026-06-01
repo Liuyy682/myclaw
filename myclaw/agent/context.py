@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import math
 from datetime import datetime
@@ -80,6 +81,8 @@ class ContextBudgetManager:
         current_user_text: str,
         *,
         model: str,
+        memory_text: str | None = None,
+        archive_history: Callable[[str], None] | None = None,
     ) -> bool:
         estimator = TokenEstimator(model)
         updated = False
@@ -91,6 +94,7 @@ class ContextBudgetManager:
                 session.messages,
                 current_user_text,
                 context_summary=summary,
+                memory_text=memory_text,
             )
             if self._within_budget(prompt_messages, config, estimator):
                 return updated
@@ -114,6 +118,8 @@ class ContextBudgetManager:
                 estimator,
             )
             self._store_summary(session, summary_content, next_cover_count, estimator)
+            if archive_history is not None:
+                archive_history(summary_content)
             updated = True
 
     @staticmethod
@@ -314,8 +320,9 @@ class ContextBuilder:
         current_user_text: str,
         *,
         context_summary: dict[str, Any] | None = None,
+        memory_text: str | None = None,
     ) -> list[Message]:
-        messages = self._initial_messages(config)
+        messages = self._initial_messages(config, memory_text)
         summary_message, covered_count = self._summary_message(context_summary, len(session_messages))
         if summary_message is not None:
             messages.append(summary_message)
@@ -335,12 +342,22 @@ class ContextBuilder:
         return {"role": "system", "content": f"{SUMMARY_MESSAGE_PREFIX}\n{content.strip()}"}, covered_count
 
     @staticmethod
-    def _initial_messages(config: AgentConfig) -> list[Message]:
+    def _initial_messages(config: AgentConfig, memory_text: str | None = None) -> list[Message]:
         messages: list[Message] = []
-        if config.system_prompt.strip():
-            messages.append({"role": "system", "content": config.system_prompt.strip()})
+        system_prompt = ContextBuilder._system_prompt(config.system_prompt, memory_text)
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
         messages.extend(dict(message) for message in config.history)
         return messages
+
+    @staticmethod
+    def _system_prompt(system_prompt: str, memory_text: str | None) -> str:
+        base = system_prompt.strip()
+        memory = memory_text.strip() if isinstance(memory_text, str) else ""
+        if not memory:
+            return base
+        memory_block = f"Long-term memory:\n{memory}"
+        return "\n\n".join(part for part in (base, memory_block) if part)
 
     def _history_messages(self, session_messages: list[Message], max_tool_result_chars: int) -> list[Message]:
         messages = self._drop_orphan_tool_results(

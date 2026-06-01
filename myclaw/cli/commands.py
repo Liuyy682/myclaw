@@ -33,7 +33,7 @@ from myclaw.tools import build_default_tool_registry
 def build_agent_loop() -> AgentLoop:
     load_env_file()
     session_manager = SessionManager()
-    tool_registry = build_default_tool_registry(Path.cwd())
+    tool_registry = build_default_tool_registry(Path.cwd(), memory_workspace=session_manager.workspace)
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
     api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:

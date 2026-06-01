@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -627,6 +628,86 @@ def test_run_executes_builtin_read_file_tool(tmp_path):
 
 
 
+class MemoryCapturingProvider:
+    model = "memory"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        return "memory seen"
+
+
+def test_run_injects_existing_memory_into_system_context(tmp_path):
+    manager = SessionManager(tmp_path)
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "MEMORY.md").write_text(
+        "# Memory\n\n- User prefers concise answers.\n",
+        encoding="utf-8",
+    )
+    provider = MemoryCapturingProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="Base system."),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    assert provider.calls[0]["messages"][0] == {
+        "role": "system",
+        "content": "Base system.\n\nLong-term memory:\n# Memory\n\n- User prefers concise answers.",
+    }
+
+
+class RememberThenCaptureProvider:
+    model = "memory"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_remember",
+                        name="remember",
+                        arguments={"content": "User prefers concise answers."},
+                    )
+                ],
+            )
+        return LLMResponse(content="ok", final=True)
+
+
+def test_remember_tool_persists_memory_for_later_turns(tmp_path):
+    manager = SessionManager(tmp_path / "workspace")
+    provider = RememberThenCaptureProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="Base system."),
+        session_manager=manager,
+        tool_registry=build_default_tool_registry(tmp_path / "files", memory_workspace=manager.workspace),
+    )
+
+    asyncio.run(loop.run("remember my preference", session_key=SESSION_KEY))
+    asyncio.run(loop.run("use my preference", session_key=SESSION_KEY))
+
+    memory_path = manager.workspace / "memory" / "MEMORY.md"
+    assert "User prefers concise answers." in memory_path.read_text(encoding="utf-8")
+    assert not (manager.workspace / "memory" / "history.jsonl").exists()
+    assert "Long-term memory:" not in provider.calls[1]["messages"][0]["content"]
+    injected = provider.calls[2]["messages"][0]
+    assert injected["role"] == "system"
+    assert injected["content"].startswith("Base system.\n\nLong-term memory:\n# Memory\n\n- ")
+    assert injected["content"].endswith(" User prefers concise answers.")
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -722,6 +803,17 @@ def test_run_summarizes_old_turns_when_message_budget_exceeded(tmp_path):
     assert summary["content"] == "compressed old turns"
     assert summary["covered_message_count"] == 4
     assert summary["token_estimate"] > 0
+    history = [
+        json.loads(line)
+        for line in (tmp_path / "memory" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert history == [
+        {
+            "timestamp": history[0]["timestamp"],
+            "source": "compact",
+            "content": "compressed old turns",
+        }
+    ]
 
 
 def test_run_summarizes_old_turns_when_token_budget_exceeded(tmp_path):

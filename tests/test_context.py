@@ -121,6 +121,25 @@ def test_context_builder_inserts_summary_and_skips_covered_messages():
     ]
 
 
+def test_context_builder_injects_memory_into_system_context():
+    builder = ContextBuilder()
+
+    messages = builder.build_messages(
+        AgentConfig(system_prompt="Base system."),
+        [],
+        "next",
+        memory_text="# Memory\n\n- User prefers concise answers.",
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": "Base system.\n\nLong-term memory:\n# Memory\n\n- User prefers concise answers.",
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+
 class FakeEncoding:
     def encode(self, text):
         return list(text)

@@ -334,8 +334,16 @@ def test_build_agent_loop_registers_default_file_tools(tmp_path, monkeypatch):
         "grep",
         "list_dir",
         "read_file",
+        "remember",
         "write_file",
     ]
+    remember = loop.tool_registry.get("remember")
+    assert remember is not None
+    result = asyncio.run(remember.execute(content="User likes CLI memory."))
+    assert result == "Remembered."
+    assert "User likes CLI memory." in (
+        tmp_path / "workspace" / "memory" / "MEMORY.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_load_env_file_reads_project_env_without_overwriting_existing_values(tmp_path, monkeypatch):

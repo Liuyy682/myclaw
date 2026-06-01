@@ -166,7 +166,7 @@ def test_glob_returns_relative_matches_recursively_skips_ignored_dirs_and_trunca
     assert truncated == "README.md\ndocs/\n[truncated: showing 2 of 5 matches]"
 
 
-def test_default_tool_registry_contains_file_tools_in_stable_order(tmp_path):
+def test_default_tool_registry_contains_default_tools_in_stable_order(tmp_path):
     registry = build_default_tool_registry(tmp_path)
 
     assert [definition["function"]["name"] for definition in registry.definitions()] == [
@@ -175,5 +175,6 @@ def test_default_tool_registry_contains_file_tools_in_stable_order(tmp_path):
         "grep",
         "list_dir",
         "read_file",
+        "remember",
         "write_file",
     ]

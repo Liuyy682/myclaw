@@ -12,18 +12,26 @@ from myclaw.config import (
     LIST_DIR_DEFAULT_MAX_ENTRIES,
     READ_FILE_DEFAULT_LIMIT,
 )
+from myclaw.memory import MemoryStore
 from myclaw.tools.base import Tool
+from myclaw.tools.memory import MemoryWriteTool
 from myclaw.tools.registry import ToolRegistry
 
 
-def build_default_tool_registry(workspace: Path | str | None = None) -> ToolRegistry:
+def build_default_tool_registry(
+    workspace: Path | str | None = None,
+    *,
+    memory_workspace: Path | str | None = None,
+) -> ToolRegistry:
     root = Path(workspace).expanduser() if workspace is not None else Path.cwd()
+    memory_root = Path(memory_workspace).expanduser() if memory_workspace is not None else root
     registry = ToolRegistry()
     registry.register(EditFileTool(root))
     registry.register(GlobTool(root))
     registry.register(GrepTool(root))
     registry.register(ReadFileTool(root))
     registry.register(ListDirTool(root))
+    registry.register(MemoryWriteTool(MemoryStore(memory_root)))
     registry.register(WriteFileTool(root))
     return registry
 
