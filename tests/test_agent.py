@@ -623,3 +623,181 @@ def test_run_executes_builtin_read_file_tool(tmp_path):
     assert reloaded.messages[2]["name"] == "read_file"
     assert reloaded.messages[2]["content"] == "1|hello from file"
     assert reloaded.messages[3]["content"] == "read complete"
+
+
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_context_messages",
+        "max_context_tokens",
+        "context_summary_max_chars",
+        "context_summary_chunk_tokens",
+    ],
+)
+def test_agent_loop_rejects_invalid_context_budget_config(tmp_path, field):
+    config = AgentConfig(system_prompt="", **{field: 0})
+
+    with pytest.raises(ValueError, match=field):
+        AgentLoop(FakeProvider(), config, session_manager=SessionManager(tmp_path))
+
+
+class BudgetSummaryProvider:
+    model = "budget"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        copied = [dict(message) for message in messages]
+        self.calls.append({"messages": copied, "tools": tools})
+        if messages and messages[0]["role"] == "system" and "Summarize older conversation turns" in messages[0]["content"]:
+            return "compressed old turns"
+        last_user = next(message["content"] for message in reversed(messages) if message["role"] == "user")
+        return f"final: {last_user}"
+
+
+class FailingSummaryProvider:
+    model = "budget"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        copied = [dict(message) for message in messages]
+        self.calls.append({"messages": copied, "tools": tools})
+        if messages and messages[0]["role"] == "system" and "Summarize older conversation turns" in messages[0]["content"]:
+            raise RuntimeError("summary unavailable")
+        return "main answer"
+
+
+def _seed_plain_turns(manager, pairs):
+    session = manager.get_or_create(SESSION_KEY)
+    for user_text, assistant_text in pairs:
+        session.add_message("user", user_text)
+        session.add_message("assistant", assistant_text)
+    manager.save(session)
+    return session
+
+
+def test_run_summarizes_old_turns_when_message_budget_exceeded(tmp_path):
+    manager = SessionManager(tmp_path)
+    _seed_plain_turns(
+        manager,
+        [
+            ("old question 1", "old answer 1"),
+            ("old question 2", "old answer 2"),
+            ("recent question", "recent answer"),
+        ],
+    )
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(
+            system_prompt="",
+            max_context_messages=5,
+            max_context_tokens=100_000,
+            context_summary_max_chars=1000,
+        ),
+        session_manager=manager,
+    )
+
+    result = asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert result.content == "final: next"
+    assert len(provider.calls) == 2
+    summary_call, main_call = provider.calls
+    assert summary_call["tools"] is None
+    assert "old question 1" in summary_call["messages"][1]["content"]
+    assert main_call["messages"][0] == {
+        "role": "system",
+        "content": "Summary of earlier conversation:\ncompressed old turns",
+    }
+    assert {"role": "user", "content": "recent question"} in main_call["messages"]
+    assert not any(message.get("content") == "old question 1" for message in main_call["messages"])
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    summary = reloaded.metadata["context_summary"]
+    assert summary["content"] == "compressed old turns"
+    assert summary["covered_message_count"] == 4
+    assert summary["token_estimate"] > 0
+
+
+def test_run_summarizes_old_turns_when_token_budget_exceeded(tmp_path):
+    manager = SessionManager(tmp_path)
+    _seed_plain_turns(manager, [("x" * 200, "y" * 200), ("recent", "answer")])
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=100, max_context_tokens=40, context_summary_max_chars=1000),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) >= 2
+    assert "compressed old turns" in provider.calls[-1]["messages"][0]["content"]
+
+
+def test_run_reuses_persisted_context_summary_without_resummarizing(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = _seed_plain_turns(manager, [("old", "answer"), ("recent", "answer")])
+    session.metadata["context_summary"] = {
+        "content": "saved summary",
+        "covered_message_count": 2,
+        "updated_at": "2026-01-01T00:00:00",
+        "token_estimate": 3,
+    }
+    manager.save(session)
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=100, max_context_tokens=100_000),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) == 1
+    messages = provider.calls[0]["messages"]
+    assert messages[0] == {"role": "system", "content": "Summary of earlier conversation:\nsaved summary"}
+    assert not any(message.get("content") == "old" for message in messages)
+    assert {"role": "user", "content": "recent"} in messages
+
+
+def test_run_uses_fallback_summary_when_summary_provider_fails(tmp_path):
+    manager = SessionManager(tmp_path)
+    _seed_plain_turns(manager, [("old fallback question", "old fallback answer"), ("recent", "answer")])
+    provider = FailingSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=4, max_context_tokens=100_000, context_summary_max_chars=500),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) == 2
+    main_messages = provider.calls[1]["messages"]
+    assert main_messages[0]["role"] == "system"
+    assert "old fallback question" in main_messages[0]["content"]
+    summary = SessionManager(tmp_path).get_or_create(SESSION_KEY).metadata["context_summary"]
+    assert "old fallback question" in summary["content"]
+
+
+def test_run_does_not_summarize_under_context_budget(tmp_path):
+    manager = SessionManager(tmp_path)
+    _seed_plain_turns(manager, [("first", "answer")])
+    provider = BudgetSummaryProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="", max_context_messages=100, max_context_tokens=100_000),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("next", session_key=SESSION_KEY))
+
+    assert len(provider.calls) == 1
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert "context_summary" not in reloaded.metadata

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from myclaw.agent.context import ContextBuilder
+from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetManager, ContextBuilder
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
 from myclaw.providers.base import LLMProvider
@@ -34,7 +34,16 @@ class AgentLoop:
             raise ValueError("max_turns must be at least 1")
         if self.config.max_tool_result_chars < 1:
             raise ValueError("max_tool_result_chars must be at least 1")
+        if self.config.max_context_messages < 1:
+            raise ValueError("max_context_messages must be at least 1")
+        if self.config.max_context_tokens < 1:
+            raise ValueError("max_context_tokens must be at least 1")
+        if self.config.context_summary_max_chars < 1:
+            raise ValueError("context_summary_max_chars must be at least 1")
+        if self.config.context_summary_chunk_tokens < 1:
+            raise ValueError("context_summary_chunk_tokens must be at least 1")
         self.context_builder = ContextBuilder()
+        self.context_budget = ContextBudgetManager(provider, self.context_builder)
         self.runner = AgentRunner(provider)
         self.session_manager = session_manager
         self.tool_registry = tool_registry
@@ -53,6 +62,13 @@ class AgentLoop:
 
         session = self.session_manager.get_or_create(session_key)
         if self._restore_incomplete_turn(session):
+            self.session_manager.save(session)
+        if await self.context_budget.ensure_budget(
+            session,
+            self.config,
+            user_text,
+            model=self.config.model or self.provider.model,
+        ):
             self.session_manager.save(session)
         messages = self._messages_for_run(session, user_text)
         self._mark_pending_user_turn(session, user_text)
@@ -146,7 +162,12 @@ class AgentLoop:
         return title[: limit - 3].rstrip() + "..."
 
     def _messages_for_run(self, session: Session, user_text: str) -> list[Message]:
-        return self.context_builder.build_messages(self.config, session.messages, user_text)
+        return self.context_builder.build_messages(
+            self.config,
+            session.messages,
+            user_text,
+            context_summary=session.metadata.get(CONTEXT_SUMMARY_METADATA_KEY),
+        )
 
     def _persist_turn(self, session: Session, assistant_messages: list[Message]) -> None:
         for message in assistant_messages:

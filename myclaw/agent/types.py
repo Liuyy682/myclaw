@@ -9,6 +9,10 @@ from myclaw.config import (
     DEFAULT_AGENT_MAX_TURNS,
     DEFAULT_AGENT_MODEL,
     DEFAULT_AGENT_RUN_MAX_ITERATIONS,
+    DEFAULT_CONTEXT_SUMMARY_CHUNK_TOKENS,
+    DEFAULT_CONTEXT_SUMMARY_MAX_CHARS,
+    DEFAULT_MAX_CONTEXT_MESSAGES,
+    DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     DEFAULT_SYSTEM_PROMPT,
 )
@@ -28,6 +32,10 @@ class AgentConfig:
     model: str = DEFAULT_AGENT_MODEL
     max_turns: int = DEFAULT_AGENT_MAX_TURNS
     max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
+    max_context_messages: int = DEFAULT_MAX_CONTEXT_MESSAGES
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    context_summary_max_chars: int = DEFAULT_CONTEXT_SUMMARY_MAX_CHARS
+    context_summary_chunk_tokens: int = DEFAULT_CONTEXT_SUMMARY_CHUNK_TOKENS
     auto_title: bool = DEFAULT_AGENT_AUTO_TITLE
     history: list[Message] = field(default_factory=list)
 
