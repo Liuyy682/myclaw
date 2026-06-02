@@ -16,6 +16,7 @@ from myclaw import (
 )
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
+from myclaw.tools.base import get_current_tool_context
 
 SESSION_KEY = "cli:direct"
 
@@ -458,6 +459,59 @@ def test_run_passes_max_tool_result_chars_to_runner_spec(tmp_path):
     asyncio.run(loop.run("hello", session_key=SESSION_KEY))
 
     assert runner.spec.max_tool_result_chars == 12
+
+
+class ContextToolProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_context", name="context", arguments={})],
+            )
+        return LLMResponse(content=messages[-1]["content"], final=True)
+
+
+def test_run_passes_runtime_context_to_tool_calls(tmp_path):
+    async def context_tool():
+        context = get_current_tool_context()
+        return {
+            "session_key": context.session_key,
+            "channel": context.channel,
+            "chat_id": context.chat_id,
+            "metadata": context.metadata,
+        }
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool("context", "Context", {"type": "object"}, context_tool))
+    loop = AgentLoop(
+        ContextToolProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+        tool_registry=registry,
+    )
+
+    result = asyncio.run(
+        loop.run(
+            "read context",
+            session_key="gateway:chat-1",
+            channel="gateway",
+            chat_id="chat-1",
+            metadata={"request_id": "req-1"},
+        )
+    )
+
+    assert result.content == (
+        '{"session_key": "gateway:chat-1", "channel": "gateway", '
+        '"chat_id": "chat-1", "metadata": {"request_id": "req-1"}}'
+    )
 
 
 def test_run_forwards_tool_progress_without_persisting_progress_events(tmp_path):

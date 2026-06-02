@@ -342,7 +342,7 @@ def test_cli_interactive_persists_two_turns(tmp_path):
     ]
 
 
-def test_build_agent_loop_registers_default_file_tools(tmp_path, monkeypatch):
+def test_build_agent_loop_registers_default_tools(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
@@ -352,12 +352,25 @@ def test_build_agent_loop_registers_default_file_tools(tmp_path, monkeypatch):
 
     assert loop.tool_registry is not None
     assert [definition["function"]["name"] for definition in loop.tool_registry.definitions()] == [
+        "ask_user",
+        "cron",
         "edit_file",
+        "exec",
         "glob",
         "grep",
         "list_dir",
+        "message",
+        "my",
+        "notebook_edit",
         "read_file",
         "remember",
+        "spawn",
+        "task_create",
+        "task_get",
+        "task_list",
+        "task_update",
+        "web_fetch",
+        "web_search",
         "write_file",
     ]
     remember = loop.tool_registry.get("remember")

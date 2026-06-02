@@ -7,10 +7,12 @@ from myclaw.agent.autocompact import AutoCompactManager
 from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetManager, ContextBuilder
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
+from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import ToolRegistry
+from myclaw.tools.base import ToolRuntimeContext
 
 
 class AgentLoop:
@@ -53,6 +55,7 @@ class AgentLoop:
         self.runner = AgentRunner(provider)
         self.session_manager = session_manager
         self.memory_store = MemoryStore(session_manager.workspace)
+        self.cron_store = CronStore(session_manager.workspace)
         self.auto_compact = AutoCompactManager(
             session_manager,
             self.context_budget,
@@ -67,6 +70,9 @@ class AgentLoop:
         text: str,
         *,
         session_key: str,
+        channel: str = "cli",
+        chat_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
         stream_callback: StreamCallback | None = None,
     ) -> RunResult:
@@ -99,6 +105,7 @@ class AgentLoop:
                 max_iterations=self.config.max_turns,
                 tools=self.tool_registry,
                 max_tool_result_chars=self.config.max_tool_result_chars,
+                tool_context=self._tool_runtime_context(session_key, channel, chat_id, metadata),
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
                 progress_callback=progress_callback,
                 stream_callback=stream_callback,
@@ -187,6 +194,24 @@ class AgentLoop:
             user_text,
             context_summary=session.metadata.get(CONTEXT_SUMMARY_METADATA_KEY),
             memory_text=memory_text,
+        )
+
+    def _tool_runtime_context(
+        self,
+        session_key: str,
+        channel: str,
+        chat_id: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> ToolRuntimeContext:
+        if chat_id is None:
+            chat_id = session_key.split(":", 1)[1] if ":" in session_key else session_key
+        return ToolRuntimeContext(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            metadata=dict(metadata or {}),
+            workspace=self.session_manager.workspace,
+            tool_names=sorted(self.tool_registry.tool_names) if self.tool_registry is not None else [],
         )
 
     def _persist_turn(self, session: Session, assistant_messages: list[Message]) -> None:

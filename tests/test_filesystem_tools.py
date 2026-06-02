@@ -170,11 +170,24 @@ def test_default_tool_registry_contains_default_tools_in_stable_order(tmp_path):
     registry = build_default_tool_registry(tmp_path)
 
     assert [definition["function"]["name"] for definition in registry.definitions()] == [
+        "ask_user",
+        "cron",
         "edit_file",
+        "exec",
         "glob",
         "grep",
         "list_dir",
+        "message",
+        "my",
+        "notebook_edit",
         "read_file",
         "remember",
+        "spawn",
+        "task_create",
+        "task_get",
+        "task_list",
+        "task_update",
+        "web_fetch",
+        "web_search",
         "write_file",
     ]

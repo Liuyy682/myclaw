@@ -1,6 +1,7 @@
 import asyncio
 
 from myclaw import FunctionTool, ToolCallRequest, ToolRegistry
+from myclaw.tools.base import ToolRuntimeContext, get_current_tool_context
 
 
 def test_tool_call_request_serializes_to_openai_tool_call():
@@ -31,6 +32,89 @@ def test_registry_returns_cached_definitions_in_stable_name_order():
     updated = registry.definitions()
     assert updated is not first
     assert [definition["function"]["name"] for definition in updated] == ["read_file"]
+
+
+def test_function_tool_exposes_openai_schema():
+    tool = FunctionTool("ping", "Ping", {"type": "object"}, lambda: "pong")
+
+    assert tool.to_schema() == {
+        "type": "function",
+        "function": {
+            "name": "ping",
+            "description": "Ping",
+            "parameters": {"type": "object"},
+        },
+    }
+
+
+class CastingTool:
+    name = "double"
+    description = "Double a positive integer"
+    parameters = {
+        "type": "object",
+        "properties": {"count": {"type": "integer"}},
+        "required": ["count"],
+    }
+
+    def cast_params(self, params):
+        return {"count": int(params["count"])}
+
+    def validate_params(self, params):
+        if params["count"] < 1:
+            raise ValueError("count must be positive")
+
+    async def execute(self, count):
+        return count * 2
+
+
+def test_registry_casts_and_validates_tool_arguments_before_execute():
+    registry = ToolRegistry()
+    registry.register(CastingTool())
+
+    cast = asyncio.run(
+        registry.execute(ToolCallRequest(id="call_double", name="double", arguments={"count": "3"}))
+    )
+    invalid = asyncio.run(
+        registry.execute(ToolCallRequest(id="call_double", name="double", arguments={"count": "0"}))
+    )
+
+    assert cast == "6"
+    assert invalid == "Error validating double: count must be positive"
+
+
+class ContextTool:
+    name = "context"
+    description = "Read runtime context"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self):
+        context = get_current_tool_context()
+        return {
+            "session_key": context.session_key,
+            "channel": context.channel,
+            "chat_id": context.chat_id,
+            "metadata": context.metadata,
+        }
+
+
+def test_registry_provides_runtime_context_during_tool_execution():
+    registry = ToolRegistry()
+    registry.register(ContextTool())
+    context = ToolRuntimeContext(
+        session_key="gateway:chat-1",
+        channel="gateway",
+        chat_id="chat-1",
+        metadata={"request_id": "req-1"},
+    )
+
+    result = asyncio.run(
+        registry.execute(ToolCallRequest(id="call_context", name="context", arguments={}), context=context)
+    )
+
+    assert result == (
+        '{"session_key": "gateway:chat-1", "channel": "gateway", '
+        '"chat_id": "chat-1", "metadata": {"request_id": "req-1"}}'
+    )
 
 
 def test_registry_executes_sync_and_async_function_tools():

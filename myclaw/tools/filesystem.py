@@ -22,16 +22,45 @@ def build_default_tool_registry(
     workspace: Path | str | None = None,
     *,
     memory_workspace: Path | str | None = None,
+    state_workspace: Path | str | None = None,
 ) -> ToolRegistry:
+    from myclaw.cron import CronStore
+    from myclaw.tasks import TaskStore
+    from myclaw.tools.ask import AskUserTool
+    from myclaw.tools.cron import CronTool
+    from myclaw.tools.message import MessageTool
+    from myclaw.tools.notebook import NotebookEditTool
+    from myclaw.tools.self import MyTool
+    from myclaw.tools.shell import ExecTool
+    from myclaw.tools.spawn import SpawnTool
+    from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
+    from myclaw.tools.web import WebFetchTool, WebSearchTool
+
     root = Path(workspace).expanduser() if workspace is not None else Path.cwd()
     memory_root = Path(memory_workspace).expanduser() if memory_workspace is not None else root
+    state_root = Path(state_workspace).expanduser() if state_workspace is not None else memory_root
+    task_store = TaskStore(state_root)
+    cron_store = CronStore(state_root)
     registry = ToolRegistry()
+    registry.register(AskUserTool())
+    registry.register(CronTool(cron_store))
     registry.register(EditFileTool(root))
+    registry.register(ExecTool(root))
     registry.register(GlobTool(root))
     registry.register(GrepTool(root))
     registry.register(ReadFileTool(root))
     registry.register(ListDirTool(root))
+    registry.register(MessageTool())
+    registry.register(MyTool())
+    registry.register(NotebookEditTool(root))
     registry.register(MemoryWriteTool(MemoryStore(memory_root)))
+    registry.register(SpawnTool())
+    registry.register(TaskCreateTool(task_store))
+    registry.register(TaskGetTool(task_store))
+    registry.register(TaskListTool(task_store))
+    registry.register(TaskUpdateTool(task_store))
+    registry.register(WebFetchTool())
+    registry.register(WebSearchTool())
     registry.register(WriteFileTool(root))
     return registry
 

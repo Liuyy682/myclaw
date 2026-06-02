@@ -42,8 +42,8 @@ class CapturingLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, text, *, session_key, progress_callback=None):
-        self.calls.append((text, session_key))
+    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
+        self.calls.append((text, session_key, kwargs))
         return type("Result", (), {"content": f"{session_key}: {text}"})()
 
 
@@ -108,7 +108,7 @@ class StreamingLoop:
         self.calls = []
         self.saw_stream_callback = None
 
-    async def run(self, text, *, session_key, progress_callback=None, stream_callback=None):
+    async def run(self, text, *, session_key, progress_callback=None, stream_callback=None, **kwargs):
         self.calls.append((text, session_key))
         self.saw_stream_callback = stream_callback is not None
         if stream_callback is not None:
@@ -133,7 +133,7 @@ def test_dispatcher_run_passes_message_session_key_to_loop():
 
     outbound = asyncio.run(scenario())
 
-    assert loop.calls == [("hello", "cli:direct")]
+    assert loop.calls == [("hello", "cli:direct", {"channel": "cli", "chat_id": "direct", "metadata": {}})]
     assert outbound.content == "cli:direct: hello"
 
 
@@ -159,7 +159,7 @@ def test_dispatcher_run_respects_session_key_override():
 
     outbound = asyncio.run(scenario())
 
-    assert loop.calls == [("hello", "shared:session")]
+    assert loop.calls == [("hello", "shared:session", {"channel": "cli", "chat_id": "direct", "metadata": {}})]
     assert outbound.content == "shared:session: hello"
 
 
@@ -267,7 +267,7 @@ class BlockingLoop:
         self.running_sessions = set()
         self.overlaps = []
 
-    async def run(self, text, *, session_key, progress_callback=None):
+    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
         if session_key in self.running_sessions:
             self.overlaps.append((text, session_key))
         self.running_sessions.add(session_key)
@@ -321,7 +321,7 @@ class CrossSessionBlockingLoop:
         self.both_started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run(self, text, *, session_key, progress_callback=None):
+    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
         self.calls.append((text, session_key))
         self.started_sessions.add(session_key)
         if len(self.started_sessions) == 2:
@@ -363,7 +363,7 @@ class BrokenLoop:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, text, *, session_key, progress_callback=None):
+    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("loop unavailable")
@@ -538,7 +538,7 @@ def test_dispatcher_treats_new_as_regular_user_message():
 
     outbound = asyncio.run(scenario())
 
-    assert loop.calls == [("/new", "cli:direct")]
+    assert loop.calls == [("/new", "cli:direct", {"channel": "cli", "chat_id": "direct", "metadata": {}})]
     assert outbound.content == "cli:direct: /new"
 
 
@@ -622,7 +622,7 @@ class CancellableLoop:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def run(self, text, *, session_key, progress_callback=None):
+    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
         self.started.set()
         try:
             await asyncio.Event().wait()

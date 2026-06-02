@@ -21,6 +21,7 @@ from myclaw.config import (
 
 if TYPE_CHECKING:
     from myclaw.tools import ToolRegistry
+    from myclaw.tools.base import ToolRuntimeContext
 
 Message = dict[str, Any]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -61,6 +62,7 @@ class AgentRunSpec:
     checkpoint_callback: CheckpointCallback | None = None
     progress_callback: ProgressCallback | None = None
     stream_callback: StreamCallback | None = None
+    tool_context: ToolRuntimeContext | None = None
 
 
 @dataclass(slots=True)

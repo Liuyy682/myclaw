@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 
 from myclaw.agent.loop import AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
@@ -36,6 +37,7 @@ class AgentDispatcher:
                     )
                 except asyncio.TimeoutError:
                     self._check_auto_compact()
+                    self._check_cron()
                     continue
                 task = asyncio.create_task(self._process_message(msg))
                 self._active_tasks.add(task)
@@ -61,6 +63,38 @@ class AgentDispatcher:
             active_session_keys=self._session_states.keys(),
         )
 
+    def _check_cron(self) -> None:
+        cron_store = getattr(self.loop, "cron_store", None)
+        if cron_store is None:
+            return
+        for job in cron_store.claim_due():
+            self._schedule_background(self._run_cron_job(job))
+
+    async def _run_cron_job(self, job: dict[str, Any]) -> None:
+        job_id = str(job.get("id") or "job")
+        job_name = str(job.get("name") or job_id)
+        metadata = {"cron_job_id": job_id, "cron_job_name": job_name}
+        try:
+            result = await self.loop.run(
+                str(job.get("prompt") or ""),
+                session_key=str(job.get("session_key") or f"cron:{job_id}"),
+                channel="cron",
+                chat_id=job_id,
+                metadata=metadata,
+            )
+            content = result.content
+        except Exception as exc:
+            content = f"Error: {exc}"
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="cron",
+                chat_id=job_id,
+                content=content,
+                metadata=metadata,
+                event_type="cron",
+            )
+        )
+
     def _schedule_background(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._active_tasks.add(task)
@@ -76,6 +110,9 @@ class AgentDispatcher:
                 try:
                     run_kwargs = {
                         "session_key": msg.session_key,
+                        "channel": msg.channel,
+                        "chat_id": msg.chat_id,
+                        "metadata": dict(msg.metadata),
                         "progress_callback": lambda payload: self._publish_progress(msg, payload),
                     }
                     if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):

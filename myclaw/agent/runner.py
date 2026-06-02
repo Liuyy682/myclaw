@@ -60,7 +60,11 @@ class AgentRunner:
                         index=index + 1,
                         total=len(llm_response.tool_calls),
                     )
-                    tool_result = await registry.execute(tool_call, max_result_chars=spec.max_tool_result_chars)
+                    tool_result = await registry.execute(
+                        tool_call,
+                        max_result_chars=spec.max_tool_result_chars,
+                        context=spec.tool_context,
+                    )
                     await self._emit_progress(
                         spec,
                         event="tool_completed",

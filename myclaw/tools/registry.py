@@ -5,7 +5,7 @@ from typing import Any
 
 from myclaw.providers.base import ToolCallRequest
 from myclaw.config import TOOL_RESULT_TRUNCATED_TEMPLATE
-from myclaw.tools.base import Tool
+from myclaw.tools.base import Tool, ToolRuntimeContext, tool_context
 
 
 class ToolRegistry:
@@ -34,14 +34,7 @@ class ToolRegistry:
             return self._cached_definitions
 
         self._cached_definitions = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                },
-            }
+            self._tool_schema(tool)
             for tool in sorted(self._tools.values(), key=lambda candidate: candidate.name)
         ]
         return self._cached_definitions
@@ -55,19 +48,70 @@ class ToolRegistry:
                 f"Error: Tool '{request.name}' arguments must be a JSON object, "
                 f"got {type(request.arguments).__name__}"
             )
-        return tool, request.arguments, None
+        arguments = dict(request.arguments)
+        cast_params = getattr(tool, "cast_params", None)
+        if callable(cast_params):
+            try:
+                cast_arguments = cast_params(arguments)
+            except Exception as exc:
+                return None, {}, f"Error casting {request.name}: {exc}"
+            if cast_arguments is None:
+                cast_arguments = arguments
+            arguments = cast_arguments
+            if not isinstance(arguments, dict):
+                return None, {}, f"Error casting {request.name}: cast_params must return a dict"
+        validate_params = getattr(tool, "validate_params", None)
+        if callable(validate_params):
+            try:
+                validate_params(arguments)
+            except Exception as exc:
+                return None, {}, f"Error validating {request.name}: {exc}"
+        return tool, arguments, None
 
-    async def execute(self, request: ToolCallRequest, *, max_result_chars: int | None = None) -> str:
+    async def execute(
+        self,
+        request: ToolCallRequest,
+        *,
+        max_result_chars: int | None = None,
+        context: ToolRuntimeContext | None = None,
+    ) -> str:
         tool, arguments, error = self.prepare_call(request)
         if error is not None:
             return self._truncate_result(error, max_result_chars)
 
         try:
             assert tool is not None
-            result = await tool.execute(**arguments)
+            runtime_context = self._runtime_context(context)
+            set_context = getattr(tool, "set_context", None)
+            if callable(set_context):
+                set_context(runtime_context)
+            with tool_context(runtime_context):
+                result = await tool.execute(**arguments)
         except Exception as exc:
             return self._truncate_result(f"Error executing {request.name}: {exc}", max_result_chars)
         return self._truncate_result(self._normalize_result(result), max_result_chars)
+
+    @staticmethod
+    def _tool_schema(tool: Tool) -> dict[str, Any]:
+        to_schema = getattr(tool, "to_schema", None)
+        if callable(to_schema):
+            schema = to_schema()
+            if isinstance(schema, dict):
+                return schema
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            },
+        }
+
+    def _runtime_context(self, context: ToolRuntimeContext | None) -> ToolRuntimeContext:
+        runtime_context = context or ToolRuntimeContext()
+        if not runtime_context.tool_names:
+            runtime_context.tool_names = sorted(self.tool_names)
+        return runtime_context
 
     @staticmethod
     def _normalize_result(result: Any) -> str:
