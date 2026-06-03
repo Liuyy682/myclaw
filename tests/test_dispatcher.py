@@ -42,7 +42,7 @@ class CapturingLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, text, *, session_key, progress_callback=None, **kwargs):
+    async def run(self, text, *, session_key, progress_callback=None, ask_callback=None, **kwargs):
         self.calls.append((text, session_key, kwargs))
         return type("Result", (), {"content": f"{session_key}: {text}"})()
 
@@ -658,3 +658,45 @@ def test_dispatcher_run_cancels_active_workers_on_shutdown():
     assert worker_cancelled is True
     assert active_tasks == set()
     assert session_states == {}
+
+
+class AskingLoop:
+    """Loop stub that invokes ask_callback once and echoes the user's answer."""
+
+    def __init__(self):
+        self.answer = None
+
+    async def run(self, text, *, session_key, progress_callback=None, ask_callback=None, **kwargs):
+        if ask_callback is not None:
+            self.answer = await ask_callback("Pick one?", ["a", "b"])
+        return type("Result", (), {"content": f"answered: {self.answer}"})()
+
+
+def test_dispatcher_ask_round_trip_blocks_then_consumes_answer():
+    bus = MessageBus()
+    loop = AskingLoop()
+    dispatcher = AgentDispatcher(bus, loop)
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="start")
+        )
+        question = await bus.consume_outbound()
+        # The turn is now blocked awaiting the answer; the next inbound is the reply.
+        await bus.publish_inbound(
+            InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="option a")
+        )
+        final = await bus.consume_outbound()
+        await _stop(task)
+        return question, final
+
+    question, final = asyncio.run(scenario())
+
+    assert question.event_type == "ask"
+    assert question.terminal is False
+    assert question.content == "Pick one?"
+    assert question.metadata["choices"] == ["a", "b"]
+    assert final.event_type == "message"
+    assert final.terminal is True
+    assert final.content == "answered: option a"

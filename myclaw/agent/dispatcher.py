@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.loop import AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 
@@ -23,6 +24,7 @@ class AgentDispatcher:
     def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
         self.bus = bus
         self.loop = loop
+        self.ask = AskCoordinator(bus)
         self._session_states: dict[str, _SessionDispatchState] = {}
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._active_session_tasks: dict[str, asyncio.Task[None]] = {}
@@ -50,6 +52,12 @@ class AgentDispatcher:
         command = self._control_command(msg.content)
         if command is not None:
             await self._process_control_message(msg, command)
+            return
+
+        # A session waiting on ask_user consumes the next message as the answer.
+        # This must run before acquiring the per-session lock, which the blocked
+        # turn still holds while awaiting the answer.
+        if self.ask.submit_answer(msg.session_key, msg.content):
             return
 
         await self._process_agent_message(msg)
@@ -114,6 +122,9 @@ class AgentDispatcher:
                         "chat_id": msg.chat_id,
                         "metadata": dict(msg.metadata),
                         "progress_callback": lambda payload: self._publish_progress(msg, payload),
+                        "ask_callback": lambda question, choices: self.ask.ask(
+                            msg.session_key, question, choices
+                        ),
                     }
                     if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
                         run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta)

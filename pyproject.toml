@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A minimal personal assistant agent MVP"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["tiktoken"]
+dependencies = ["tiktoken", "mcp"]
 
 [build-system]
 requires = ["hatchling"]

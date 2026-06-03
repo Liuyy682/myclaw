@@ -17,7 +17,7 @@ from myclaw.cron import CronStore
 from myclaw.tools.base import ToolRuntimeContext, tool_context
 
 
-def test_ask_message_spawn_and_my_tools_use_runtime_context(tmp_path):
+def test_message_and_my_tools_use_runtime_context(tmp_path):
     context = ToolRuntimeContext(
         session_key="cli:direct",
         channel="cli",
@@ -37,24 +37,56 @@ def test_ask_message_spawn_and_my_tools_use_runtime_context(tmp_path):
 
     asked, messaged, spawned, mine = asyncio.run(scenario())
 
-    assert asked == {
-        "status": "awaiting_user",
-        "question": "Choose?",
-        "choices": ["a", "b"],
-        "session_key": "cli:direct",
-    }
+    # Without host callbacks wired into the context, ask/spawn report unavailability
+    # instead of pretending to succeed.
+    assert asked == "Error: interactive user prompts are not available in this context"
+    assert spawned == "Error: sub-agent execution is not available in this context"
     assert messaged == {
         "status": "queued",
         "channel": "cli",
         "chat_id": "direct",
         "content": "hello",
     }
-    assert spawned["status"] == "stubbed"
-    assert spawned["name"] == "summary"
-    assert spawned["session_key"] == "cli:direct"
     assert mine["session_key"] == "cli:direct"
     assert mine["workspace"] == str(tmp_path)
     assert mine["tools"] == ["ask_user", "message", "my", "spawn"]
+
+
+def test_spawn_tool_runs_subagent_when_context_provides_callback(tmp_path):
+    async def fake_spawn(prompt, name):
+        return f"sub[{name}]: {prompt}"
+
+    context = ToolRuntimeContext(session_key="cli:direct", workspace=tmp_path, spawn=fake_spawn)
+
+    async def scenario():
+        with tool_context(context):
+            return await SpawnTool().execute(prompt="summarize this", name="summary")
+
+    spawned = asyncio.run(scenario())
+
+    assert spawned["status"] == "completed"
+    assert spawned["name"] == "summary"
+    assert spawned["result"] == "sub[summary]: summarize this"
+
+
+def test_ask_tool_returns_answer_when_context_provides_callback(tmp_path):
+    async def fake_ask(question, choices):
+        return f"answer to {question} from {choices}"
+
+    context = ToolRuntimeContext(session_key="cli:direct", workspace=tmp_path, ask=fake_ask)
+
+    async def scenario():
+        with tool_context(context):
+            return await AskUserTool().execute(question="Choose?", choices=["a", "b"])
+
+    answered = asyncio.run(scenario())
+
+    assert answered == {
+        "status": "answered",
+        "question": "Choose?",
+        "choices": ["a", "b"],
+        "answer": "answer to Choose? from ['a', 'b']",
+    }
 
 
 def test_exec_tool_runs_workspace_bounded_commands_and_blocks_destructive_commands(tmp_path):

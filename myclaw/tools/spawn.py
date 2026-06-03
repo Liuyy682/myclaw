@@ -15,7 +15,7 @@ class SpawnTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Record a subtask request. This simplified implementation does not start a real subagent."
+        return "Run a subtask in an isolated sub-agent and return its final answer."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -32,10 +32,11 @@ class SpawnTool(Tool):
         if prompt is None or not str(prompt).strip():
             return "Error: prompt is required"
         context = get_current_tool_context()
+        if context.spawn is None:
+            return "Error: sub-agent execution is not available in this context"
+        result = await context.spawn(str(prompt), name)
         return {
-            "status": "stubbed",
-            "message": "spawn recorded but not executed",
+            "status": "completed",
             "name": name or "subtask",
-            "prompt": str(prompt),
-            "session_key": context.session_key,
+            "result": result,
         }

@@ -1,3 +1,4 @@
+from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.context import ContextBuilder
 from myclaw.agent.dispatcher import AgentDispatcher
 from myclaw.agent.loop import AgentLoop
@@ -7,6 +8,7 @@ from myclaw.agent.types import AgentConfig, AgentRunResult, AgentRunSpec, Messag
 
 __all__ = [
     "AgentConfig",
+    "AskCoordinator",
     "ContextBuilder",
     "AgentDispatcher",
     "DispatcherRuntime",

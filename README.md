@@ -67,3 +67,25 @@ MYCLAW_IDLE_COMPACT_AFTER_MINUTES=15
 The default is `0`, which disables auto-compact. When enabled, idle sessions are
 summarized before they are resumed and only the recent conversation tail is kept
 in the session file.
+
+## MCP servers
+
+The assistant can attach tools from external [MCP](https://modelcontextprotocol.io)
+servers. Drop an optional `mcp.json` in the workspace (next to the `sessions/`
+directory) listing stdio servers:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}
+```
+
+On startup each server is launched, its tools are discovered, and they are
+registered under namespaced names like `mcp__filesystem__read_file` so they
+never collide with built-in tools. Servers are shut down cleanly when the
+process exits. A missing or invalid `mcp.json` is ignored.

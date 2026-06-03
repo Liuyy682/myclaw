@@ -15,7 +15,7 @@ class AskUserTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Ask the user a follow-up question. This simplified tool records the request without pausing execution."
+        return "Ask the user a follow-up question and wait for their reply before continuing."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -32,9 +32,13 @@ class AskUserTool(Tool):
         if not question or not question.strip():
             return "Error: question is required"
         context = get_current_tool_context()
+        normalized_choices = [str(choice) for choice in choices or []]
+        if context.ask is None:
+            return "Error: interactive user prompts are not available in this context"
+        answer = await context.ask(question.strip(), normalized_choices)
         return {
-            "status": "awaiting_user",
+            "status": "answered",
             "question": question.strip(),
-            "choices": [str(choice) for choice in choices or []],
-            "session_key": context.session_key,
+            "choices": normalized_choices,
+            "answer": answer,
         }

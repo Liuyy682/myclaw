@@ -3,10 +3,13 @@ from __future__ import annotations
 import inspect
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+SpawnCallback = Callable[[str, str | None], Awaitable[str]]
+AskCallback = Callable[[str, list[str]], Awaitable[str]]
 
 
 @dataclass(slots=True)
@@ -17,6 +20,8 @@ class ToolRuntimeContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     workspace: Path | None = None
     tool_names: list[str] = field(default_factory=list)
+    spawn: SpawnCallback | None = None
+    ask: AskCallback | None = None
 
 
 _CURRENT_TOOL_CONTEXT: ContextVar[ToolRuntimeContext] = ContextVar(

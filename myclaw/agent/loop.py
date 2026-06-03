@@ -12,7 +12,7 @@ from myclaw.memory import MemoryStore
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import ToolRegistry
-from myclaw.tools.base import ToolRuntimeContext
+from myclaw.tools.base import AskCallback, ToolRuntimeContext
 
 
 class AgentLoop:
@@ -75,6 +75,7 @@ class AgentLoop:
         metadata: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
         stream_callback: StreamCallback | None = None,
+        ask_callback: AskCallback | None = None,
     ) -> RunResult:
         user_text = text.strip()
         if not user_text:
@@ -105,7 +106,7 @@ class AgentLoop:
                 max_iterations=self.config.max_turns,
                 tools=self.tool_registry,
                 max_tool_result_chars=self.config.max_tool_result_chars,
-                tool_context=self._tool_runtime_context(session_key, channel, chat_id, metadata),
+                tool_context=self._tool_runtime_context(session_key, channel, chat_id, metadata, ask_callback),
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
                 progress_callback=progress_callback,
                 stream_callback=stream_callback,
@@ -125,6 +126,45 @@ class AgentLoop:
 
     def reset_session(self, session_key: str) -> None:
         self.session_manager.reset(session_key)
+
+    def _subagent_registry(self) -> ToolRegistry:
+        sub = ToolRegistry()
+        if self.tool_registry is None:
+            return sub
+        for name in self.tool_registry.tool_names:
+            if name in {"spawn", "ask_user"}:
+                continue
+            tool = self.tool_registry.get(name)
+            if tool is not None:
+                sub.register(tool)
+        return sub
+
+    async def _spawn_subagent(self, prompt: str, name: str | None = None) -> str:
+        sub_prompt = (prompt or "").strip()
+        if not sub_prompt:
+            return "Error: prompt is required"
+        registry = self._subagent_registry()
+        model = self.config.model or self.provider.model
+        messages: list[Message] = [
+            {"role": "system", "content": self.config.system_prompt},
+            {"role": "user", "content": sub_prompt},
+        ]
+        result = await self.runner.run(
+            AgentRunSpec(
+                messages=messages,
+                model=model,
+                max_iterations=min(self.config.max_turns, 4),
+                tools=registry,
+                max_tool_result_chars=self.config.max_tool_result_chars,
+                tool_context=ToolRuntimeContext(
+                    session_key=f"subagent:{name or 'subtask'}",
+                    channel="subagent",
+                    workspace=self.session_manager.workspace,
+                    tool_names=sorted(registry.tool_names),
+                ),
+            )
+        )
+        return result.content
 
     async def _ensure_session_title(self, session: Session) -> None:
         if not self.config.auto_title or session.metadata.get(self._SESSION_TITLE_KEY):
@@ -202,6 +242,7 @@ class AgentLoop:
         channel: str,
         chat_id: str | None,
         metadata: dict[str, Any] | None,
+        ask_callback: AskCallback | None = None,
     ) -> ToolRuntimeContext:
         if chat_id is None:
             chat_id = session_key.split(":", 1)[1] if ":" in session_key else session_key
@@ -212,6 +253,8 @@ class AgentLoop:
             metadata=dict(metadata or {}),
             workspace=self.session_manager.workspace,
             tool_names=sorted(self.tool_registry.tool_names) if self.tool_registry is not None else [],
+            spawn=self._spawn_subagent,
+            ask=ask_callback,
         )
 
     def _persist_turn(self, session: Session, assistant_messages: list[Message]) -> None:
