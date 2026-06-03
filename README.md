@@ -89,3 +89,18 @@ On startup each server is launched, its tools are discovered, and they are
 registered under namespaced names like `mcp__filesystem__read_file` so they
 never collide with built-in tools. Servers are shut down cleanly when the
 process exits. A missing or invalid `mcp.json` is ignored.
+
+## Sandboxed shell execution
+
+The `exec` tool runs shell commands inside a [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`) sandbox when it is available:
+
+- the host filesystem is mounted read-only, and only the workspace is writable;
+- PID, IPC, and UTS namespaces are isolated, and the child dies with the parent;
+- network is disabled unless the call passes `allow_network: true`.
+
+If `bwrap` is missing or user namespaces are unavailable (some containers and CI),
+`exec` falls back to running the command directly, keeping a command blacklist
+(`rm -rf`, `mkfs`, `dd of=`, fork bombs, ...) and workspace-relative `cwd`
+checks as a second line of defense. The result includes a `sandboxed` flag
+indicating which path was used.

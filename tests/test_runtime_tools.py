@@ -2,19 +2,28 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 from myclaw.bus import MessageBus
 from myclaw.tools.ask import AskUserTool
 from myclaw.tools.cron import CronTool
 from myclaw.tools.message import MessageTool
 from myclaw.tools.notebook import NotebookEditTool
 from myclaw.tools.self import MyTool
-from myclaw.tools.shell import ExecTool
+from myclaw.tools.shell import ExecTool, _detect_bwrap
 from myclaw.tools.spawn import SpawnTool
 from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
 from myclaw.tools.web import WebFetchTool, WebSearchTool
 from myclaw.tasks import TaskStore
 from myclaw.cron import CronStore
 from myclaw.tools.base import ToolRuntimeContext, tool_context
+
+
+def _bwrap_ready() -> bool:
+    return asyncio.run(_detect_bwrap())
+
+
+requires_bwrap = pytest.mark.skipif(not _bwrap_ready(), reason="bwrap sandbox not available")
 
 
 def test_message_and_my_tools_use_runtime_context(tmp_path):
@@ -103,6 +112,60 @@ def test_exec_tool_runs_workspace_bounded_commands_and_blocks_destructive_comman
     assert blocked.startswith("Error: command is blocked")
     assert blocked_nested.startswith("Error: command is blocked")
     assert outside.startswith("Error: Path is outside workspace:")
+
+
+@requires_bwrap
+def test_exec_sandbox_reports_sandboxed_and_can_write_workspace(tmp_path):
+    tool = ExecTool(tmp_path)
+
+    result = asyncio.run(tool.execute(cmd="echo data > out.txt && cat out.txt"))
+
+    assert result["sandboxed"] is True
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "data\n"
+    # The write lands in the real workspace because it is bind-mounted read-write.
+    assert (tmp_path / "out.txt").read_text() == "data\n"
+
+
+@requires_bwrap
+def test_exec_sandbox_makes_system_paths_read_only(tmp_path):
+    tool = ExecTool(tmp_path)
+
+    result = asyncio.run(tool.execute(cmd="echo x > /usr/sandbox_probe"))
+
+    assert result["sandboxed"] is True
+    assert result["exit_code"] != 0
+    assert "Read-only file system" in result["stderr"]
+
+
+@requires_bwrap
+def test_exec_sandbox_blocks_network_by_default_and_allows_when_requested(tmp_path):
+    tool = ExecTool(tmp_path)
+    probe = "python3 -c \"import socket; socket.gethostbyname('example.com')\""
+
+    blocked = asyncio.run(tool.execute(cmd=probe))
+    allowed = asyncio.run(tool.execute(cmd=probe, allow_network=True))
+
+    assert blocked["exit_code"] != 0
+    # With network namespace shared, resolution either succeeds or fails for
+    # reasons unrelated to the sandbox cutting it off.
+    assert "Temporary failure in name resolution" not in allowed["stderr"]
+
+
+def test_exec_falls_back_to_blacklist_when_bwrap_unavailable(tmp_path, monkeypatch):
+    import myclaw.tools.shell as shell
+
+    monkeypatch.setattr(shell, "_BWRAP_AVAILABLE", False)
+    tool = ExecTool(tmp_path)
+
+    ok = asyncio.run(tool.execute(cmd="echo fallback-ok"))
+    blocked = asyncio.run(tool.execute(cmd="rm -rf /"))
+
+    assert ok["sandboxed"] is False
+    assert ok["exit_code"] == 0
+    assert ok["stdout"] == "fallback-ok\n"
+    # The command blacklist remains the second line of defense in fallback mode.
+    assert blocked.startswith("Error: command is blocked")
 
 
 def test_notebook_edit_replaces_existing_cell_source(tmp_path):
