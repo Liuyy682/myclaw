@@ -18,6 +18,7 @@ from myclaw.config import (
     DEFAULT_GATEWAY_PORT,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
+    DREAM_INTERVAL_MINUTES_ENV_VAR,
     FAKE_PROVIDER_MODEL,
     IDLE_COMPACT_AFTER_MINUTES_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
@@ -37,6 +38,7 @@ def build_agent_loop() -> AgentLoop:
     tool_registry = build_default_tool_registry(Path.cwd(), memory_workspace=session_manager.workspace)
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
     idle_compact_after_minutes = _env_int(IDLE_COMPACT_AFTER_MINUTES_ENV_VAR, default=0)
+    dream_interval_minutes = _env_int(DREAM_INTERVAL_MINUTES_ENV_VAR, default=0)
     api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:
         provider = OpenAICompatibleProvider(
@@ -50,6 +52,7 @@ def build_agent_loop() -> AgentLoop:
                 model=model,
                 auto_title=True,
                 idle_compact_after_minutes=idle_compact_after_minutes,
+                dream_interval_minutes=dream_interval_minutes,
             ),
             session_manager=session_manager,
             tool_registry=tool_registry,
@@ -60,6 +63,7 @@ def build_agent_loop() -> AgentLoop:
             model=FAKE_PROVIDER_MODEL,
             auto_title=True,
             idle_compact_after_minutes=idle_compact_after_minutes,
+            dream_interval_minutes=dream_interval_minutes,
         ),
         session_manager=session_manager,
         tool_registry=tool_registry,

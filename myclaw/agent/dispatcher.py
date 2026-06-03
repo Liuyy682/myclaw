@@ -40,6 +40,7 @@ class AgentDispatcher:
                 except asyncio.TimeoutError:
                     self._check_auto_compact()
                     self._check_cron()
+                    self._check_dream()
                     continue
                 task = asyncio.create_task(self._process_message(msg))
                 self._active_tasks.add(task)
@@ -77,6 +78,13 @@ class AgentDispatcher:
             return
         for job in cron_store.claim_due():
             self._schedule_background(self._run_cron_job(job))
+
+    def _check_dream(self) -> None:
+        dream = getattr(self.loop, "dream", None)
+        if dream is None or not dream.enabled:
+            return
+        if dream.should_run_now() and not dream.running:
+            self._schedule_background(dream.run_once())
 
     async def _run_cron_job(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("id") or "job")

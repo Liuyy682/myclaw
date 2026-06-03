@@ -5,6 +5,7 @@ from typing import Any
 
 from myclaw.agent.autocompact import AutoCompactManager
 from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetManager, ContextBuilder
+from myclaw.agent.dream import DreamManager
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
 from myclaw.cron import CronStore
@@ -48,6 +49,8 @@ class AgentLoop:
             raise ValueError("context_summary_chunk_tokens must be at least 1")
         if self.config.idle_compact_after_minutes < 0:
             raise ValueError("idle_compact_after_minutes must be at least 0")
+        if self.config.dream_interval_minutes < 0:
+            raise ValueError("dream_interval_minutes must be at least 0")
         if self.config.auto_compact_recent_messages < 1:
             raise ValueError("auto_compact_recent_messages must be at least 1")
         self.context_builder = ContextBuilder()
@@ -63,6 +66,13 @@ class AgentLoop:
         self.auto_compact = AutoCompactManager(
             session_manager,
             self.context_budget,
+            self.memory_store,
+            self.config,
+            model=self.config.model or self.provider.model,
+        )
+        self.dream = DreamManager(
+            session_manager,
+            provider,
             self.memory_store,
             self.config,
             model=self.config.model or self.provider.model,
@@ -240,6 +250,8 @@ class AgentLoop:
             user_text,
             context_summary=session.metadata.get(CONTEXT_SUMMARY_METADATA_KEY),
             memory_text=memory_text,
+            user_text=self.memory_store.read_user(),
+            soul_text=self.memory_store.read_soul(),
         )
 
     def _tool_runtime_context(

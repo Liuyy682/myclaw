@@ -140,6 +140,46 @@ def test_context_builder_injects_memory_into_system_context():
     ]
 
 
+def test_context_builder_layers_soul_user_and_memory():
+    builder = ContextBuilder()
+
+    messages = builder.build_messages(
+        AgentConfig(system_prompt="Base system."),
+        [],
+        "next",
+        memory_text="- Project uses Python.",
+        user_text="- Name is Sam.",
+        soul_text="You are warm and concise.",
+    )
+
+    # SOUL leads (persona), then base; USER + MEMORY share the long-term block,
+    # with USER under an "About the user" subsection and MEMORY unlabeled.
+    assert messages[0] == {
+        "role": "system",
+        "content": (
+            "You are warm and concise.\n\n"
+            "Base system.\n\n"
+            "Long-term memory:\n"
+            "About the user:\n- Name is Sam.\n\n"
+            "- Project uses Python."
+        ),
+    }
+    assert messages[1] == {"role": "user", "content": "next"}
+
+
+def test_context_builder_omits_empty_memory_layers():
+    builder = ContextBuilder()
+
+    messages = builder.build_messages(
+        AgentConfig(system_prompt="Base system."),
+        [],
+        "next",
+        soul_text="Persona only.",
+    )
+
+    assert messages[0] == {"role": "system", "content": "Persona only.\n\nBase system."}
+
+
 class FakeEncoding:
     def encode(self, text):
         return list(text)

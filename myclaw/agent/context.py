@@ -342,8 +342,10 @@ class ContextBuilder:
         *,
         context_summary: dict[str, Any] | None = None,
         memory_text: str | None = None,
+        user_text: str | None = None,
+        soul_text: str | None = None,
     ) -> list[Message]:
-        messages = self._initial_messages(config, memory_text)
+        messages = self._initial_messages(config, memory_text, user_text, soul_text)
         summary_message, covered_count = self._summary_message(context_summary, len(session_messages))
         if summary_message is not None:
             messages.append(summary_message)
@@ -363,22 +365,46 @@ class ContextBuilder:
         return {"role": "system", "content": f"{SUMMARY_MESSAGE_PREFIX}\n{content.strip()}"}, covered_count
 
     @staticmethod
-    def _initial_messages(config: AgentConfig, memory_text: str | None = None) -> list[Message]:
+    def _initial_messages(
+        config: AgentConfig,
+        memory_text: str | None = None,
+        user_text: str | None = None,
+        soul_text: str | None = None,
+    ) -> list[Message]:
         messages: list[Message] = []
-        system_prompt = ContextBuilder._system_prompt(config.system_prompt, memory_text)
+        system_prompt = ContextBuilder._system_prompt(config.system_prompt, memory_text, user_text, soul_text)
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(dict(message) for message in config.history)
         return messages
 
     @staticmethod
-    def _system_prompt(system_prompt: str, memory_text: str | None) -> str:
+    def _system_prompt(
+        system_prompt: str,
+        memory_text: str | None,
+        user_text: str | None = None,
+        soul_text: str | None = None,
+    ) -> str:
         base = system_prompt.strip()
+        soul = soul_text.strip() if isinstance(soul_text, str) else ""
+        user = user_text.strip() if isinstance(user_text, str) else ""
         memory = memory_text.strip() if isinstance(memory_text, str) else ""
-        if not memory:
-            return base
-        memory_block = f"Long-term memory:\n{memory}"
-        return "\n\n".join(part for part in (base, memory_block) if part)
+
+        # SOUL is the assistant's persona — it leads, before the base instructions.
+        head = "\n\n".join(part for part in (soul, base) if part)
+
+        # USER and MEMORY are facts — they share the long-term memory block. MEMORY
+        # stays unlabeled (the default content); USER gets a light subsection header.
+        facts = "\n\n".join(
+            block
+            for block in (
+                f"About the user:\n{user}" if user else "",
+                memory,
+            )
+            if block
+        )
+        memory_block = f"Long-term memory:\n{facts}" if facts else ""
+        return "\n\n".join(part for part in (head, memory_block) if part)
 
     def _history_messages(self, session_messages: list[Message], max_tool_result_chars: int) -> list[Message]:
         messages = self._drop_orphan_tool_results(

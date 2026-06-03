@@ -939,6 +939,7 @@ def test_run_summarizes_old_turns_when_message_budget_exceeded(tmp_path):
     ]
     assert history == [
         {
+            "id": 0,
             "timestamp": history[0]["timestamp"],
             "source": "compact",
             "content": "compressed old turns",

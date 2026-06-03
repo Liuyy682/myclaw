@@ -12,6 +12,7 @@ from myclaw.config import (
     DEFAULT_AUTO_COMPACT_RECENT_MESSAGES,
     DEFAULT_CONTEXT_SUMMARY_CHUNK_TOKENS,
     DEFAULT_CONTEXT_SUMMARY_MAX_CHARS,
+    DEFAULT_DREAM_INTERVAL_MINUTES,
     DEFAULT_IDLE_COMPACT_AFTER_MINUTES,
     DEFAULT_MAX_CONTEXT_MESSAGES,
     DEFAULT_MAX_CONTEXT_TOKENS,
@@ -42,6 +43,7 @@ class AgentConfig:
     auto_title: bool = DEFAULT_AGENT_AUTO_TITLE
     idle_compact_after_minutes: int = DEFAULT_IDLE_COMPACT_AFTER_MINUTES
     auto_compact_recent_messages: int = DEFAULT_AUTO_COMPACT_RECENT_MESSAGES
+    dream_interval_minutes: int = DEFAULT_DREAM_INTERVAL_MINUTES
     history: list[Message] = field(default_factory=list)
 
 

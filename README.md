@@ -68,6 +68,38 @@ The default is `0`, which disables auto-compact. When enabled, idle sessions are
 summarized before they are resumed and only the recent conversation tail is kept
 in the session file.
 
+## Dream: memory consolidation
+
+Dream is a periodic, two-phase job that runs off the main conversation loop and
+distills the compacted history stream (`memory/history.jsonl`) into long-term
+memory files. Enable it with an interval in minutes:
+
+```env
+MYCLAW_DREAM_INTERVAL_MINUTES=120
+```
+
+The default is `0`, which disables Dream. When enabled, the dispatcher checks on
+each idle tick whether the interval has elapsed and there are unconsumed history
+entries; if so it runs one cycle in the background:
+
+- **Phase 1 (analysis, no tools)** reads the new history entries plus the current
+  memory files and emits a plain-text checklist of facts to add or prune.
+- **Phase 2 (file-editing agent)** applies that checklist with incremental edits,
+  using file tools scoped to the `memory/` directory.
+
+Three markdown files under `memory/` hold the distilled memory:
+
+- `SOUL.md` — the assistant's persona and tone (injected ahead of the base prompt).
+- `USER.md` — user identity and preferences.
+- `MEMORY.md` — project knowledge and facts.
+
+`USER.md` and `MEMORY.md` are injected together as the long-term memory block.
+Each `MEMORY.md` fact carries a `⟨id⟩` tag pointing back to its source entry in
+`history.jsonl`; entries carry a stable id so these pointers survive even if the
+stream is later truncated. A cursor at `memory/.dream_cursor` tracks the last
+consumed entry and always advances past a processed batch, so a failed cycle
+never wedges the system on the same entries.
+
 ## MCP servers
 
 The assistant can attach tools from external [MCP](https://modelcontextprotocol.io)

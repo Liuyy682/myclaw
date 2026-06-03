@@ -75,6 +75,55 @@ def test_dispatcher_idle_tick_checks_auto_compact():
     assert calls == [set()]
 
 
+class RecordingDream:
+    def __init__(self, *, enabled=True, ready=True):
+        self.enabled = enabled
+        self.running = False
+        self._ready = ready
+        self.ran = asyncio.Event()
+        self.run_count = 0
+
+    def should_run_now(self):
+        return self._ready
+
+    async def run_once(self):
+        self.run_count += 1
+        self.ran.set()
+        return True
+
+
+def test_dispatcher_idle_tick_schedules_dream_when_ready():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    loop.dream = RecordingDream(enabled=True, ready=True)
+    dispatcher = AgentDispatcher(bus, loop)
+    dispatcher._AUTO_COMPACT_IDLE_TICK_SECONDS = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await asyncio.wait_for(loop.dream.ran.wait(), timeout=0.5)
+        await _stop(task)
+        return loop.dream.run_count
+
+    assert asyncio.run(scenario()) >= 1
+
+
+def test_dispatcher_idle_tick_skips_dream_when_disabled():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    loop.dream = RecordingDream(enabled=False, ready=True)
+    dispatcher = AgentDispatcher(bus, loop)
+    dispatcher._AUTO_COMPACT_IDLE_TICK_SECONDS = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await asyncio.sleep(0.1)
+        await _stop(task)
+        return loop.dream.run_count
+
+    assert asyncio.run(scenario()) == 0
+
+
 def test_dispatcher_idle_tick_skips_active_or_queued_sessions():
     bus = MessageBus()
     loop = BlockingLoop()
