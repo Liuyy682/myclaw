@@ -438,6 +438,45 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     assert reloaded.metadata == {}
 
 
+def test_run_writes_full_transcript_including_tool_calls(tmp_path):
+    manager = SessionManager(tmp_path)
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    loop = AgentLoop(
+        ToolLoopProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+
+    asyncio.run(loop.run("what is 2 + 3?", session_key=SESSION_KEY))
+
+    path = tmp_path / "transcripts" / f"{SessionManager.safe_key(SESSION_KEY)}.jsonl"
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    assert all(record["session_key"] == SESSION_KEY for record in records)
+    assert all(record["logged_at"] for record in records)
+    messages = [record["message"] for record in records]
+
+    # User message, then the verbatim assistant tool call, tool result, and final reply.
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "what is 2 + 3?"
+
+    tool_call_message = messages[1]
+    assert tool_call_message["role"] == "assistant"
+    assert tool_call_message["tool_calls"][0]["function"]["name"] == "add"
+    assert tool_call_message["tool_calls"][0]["function"]["arguments"] == '{"a": 2, "b": 3}'
+
+    tool_result = messages[2]
+    assert tool_result["role"] == "tool"
+    assert tool_result["tool_call_id"] == "call_add"
+    assert tool_result["name"] == "add"
+    assert tool_result["content"] == "5"
+
+    assert messages[3]["role"] == "assistant"
+    assert messages[3]["content"] == "sum is 5"
+
+
 class SpecCapturingRunner:
     def __init__(self):
         self.spec = None

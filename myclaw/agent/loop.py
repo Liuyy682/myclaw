@@ -10,7 +10,7 @@ from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallb
 from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
 from myclaw.providers.base import LLMProvider
-from myclaw.session import Session, SessionManager
+from myclaw.session import Session, SessionManager, TranscriptStore
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import AskCallback, ToolRuntimeContext
 
@@ -54,6 +54,10 @@ class AgentLoop:
         self.context_budget = ContextBudgetManager(provider, self.context_builder)
         self.runner = AgentRunner(provider)
         self.session_manager = session_manager
+        self.transcript = TranscriptStore(
+            session_manager.workspace,
+            safe_key=SessionManager.safe_key,
+        )
         self.memory_store = MemoryStore(session_manager.workspace)
         self.cron_store = CronStore(session_manager.workspace)
         self.auto_compact = AutoCompactManager(
@@ -98,6 +102,7 @@ class AgentLoop:
             self.session_manager.save(session)
         messages = self._messages_for_run(session, user_text, memory_text)
         self._mark_pending_user_turn(session, user_text)
+        self.transcript.append(session_key, session.messages[-1])
 
         result = await self.runner.run(
             AgentRunSpec(
@@ -113,6 +118,7 @@ class AgentLoop:
             )
         )
         self._persist_turn(session, result.messages)
+        self.transcript.append_many(session_key, result.messages)
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
         await self._ensure_session_title(session)
