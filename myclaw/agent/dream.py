@@ -7,7 +7,7 @@ from pathlib import Path
 
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message
-from myclaw.memory import MemoryStore
+from myclaw.memory import MemoryGit, MemoryStore
 from myclaw.providers.base import LLMProvider, LLMResponse
 from myclaw.session import SessionManager
 from myclaw.tools import ToolRegistry
@@ -84,6 +84,7 @@ class DreamManager:
         self.model = model
         self.runner = AgentRunner(provider)
         self.memory_dir = memory_store.memory_dir
+        self.git = MemoryGit(self.memory_dir)
         self.cursor_path = self.memory_dir / ".dream_cursor"
         self.running = False
 
@@ -125,11 +126,26 @@ class DreamManager:
             checklist = await self._phase1_analyze(entries)
             if checklist and checklist.strip().lower() != "(nothing)":
                 await self._phase2_apply(checklist)
+                await self._commit_memory(checklist)
         finally:
             # The cursor always advances so we never re-chew the same batch,
             # even if a phase failed midway (mirrors nanobot's Dream).
             self._write_cursor(last_id)
         return True
+
+    async def _commit_memory(self, checklist: str) -> None:
+        """Commit the memory files so each consolidation is auditable/revertible.
+
+        Best-effort: MemoryGit swallows its own errors, so a missing or failing
+        git never disrupts the consolidation flow.
+        """
+        if not await self.git.ensure_repo():
+            return
+        count = await self.git.changed_count()
+        if count == 0:
+            return
+        title = f"dream: {datetime.now().isoformat(timespec='seconds')}, {count} change(s)"
+        await self.git.commit_all(title, checklist)
 
     async def _phase1_analyze(self, entries: list[dict]) -> str:
         history_block = "\n".join(

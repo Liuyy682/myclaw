@@ -1,5 +1,8 @@
 import asyncio
 import json
+import shutil
+
+import pytest
 
 from myclaw import AgentConfig
 from myclaw.agent.dream import DreamManager
@@ -127,3 +130,33 @@ def test_run_once_returns_false_when_no_new_entries(tmp_path):
     dream, _ = _make_dream(tmp_path, ScriptedDreamProvider("(nothing)"))
 
     assert asyncio.run(dream.run_once()) is False
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_run_once_auto_commits_memory_changes(tmp_path):
+    provider = ScriptedDreamProvider("[USER] Name is Sam.")
+    dream, store = _make_dream(tmp_path, provider)
+    store.append_history("the user introduced themselves as Sam")
+
+    assert asyncio.run(dream.run_once()) is True
+
+    # The memory dir became a git repo with one dream commit carrying the
+    # checklist as the body.
+    assert asyncio.run(dream.git.is_repo()) is True
+    entries = asyncio.run(dream.git.log(5))
+    assert len(entries) == 1
+    assert entries[0]["subject"].startswith("dream:")
+    code, body, _ = asyncio.run(dream.git._run("log", "-1", "--format=%B"))
+    assert "[USER] Name is Sam." in body
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_nothing_checklist_produces_no_commit(tmp_path):
+    provider = ScriptedDreamProvider("(nothing)")
+    dream, store = _make_dream(tmp_path, provider)
+    store.append_history("idle chatter")
+
+    assert asyncio.run(dream.run_once()) is True
+
+    # Phase 2 never ran, so no repo/commit was created.
+    assert asyncio.run(dream.git.log(5)) == []

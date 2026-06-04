@@ -100,6 +100,24 @@ stream is later truncated. A cursor at `memory/.dream_cursor` tracks the last
 consumed entry and always advances past a processed batch, so a failed cycle
 never wedges the system on the same entries.
 
+### Version tracking
+
+Each consolidation that changes the memory files is committed to a git
+repository in the `memory/` directory, giving the memory an auditable,
+revertible history. The repo is initialised on the first commit (with a local
+`myclaw-dream` identity, leaving your global git config untouched) and tracks
+only the memory files — `sessions/` is separate. Commit messages use a
+`dream: <time>, N change(s)` subject with the Phase 1 checklist as the body, so
+each commit records why the memory changed.
+
+Two interactive commands (CLI only):
+
+- `/dream` — run a consolidation cycle now instead of waiting for the timer.
+- `/dream-log [N]` — show the most recent consolidation commits (default 10).
+
+To revert, use git directly against the memory repo, for example
+`git -C ~/.myclaw/workspace/memory revert <hash>`.
+
 ## MCP servers
 
 The assistant can attach tools from external [MCP](https://modelcontextprotocol.io)

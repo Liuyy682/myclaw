@@ -31,6 +31,8 @@ from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
 
+_DEFAULT_DREAM_LOG_LIMIT = 10
+
 
 def build_agent_loop() -> AgentLoop:
     load_env_file()
@@ -155,6 +157,13 @@ async def run_interactive(
                 if _new_requested(text):
                     session_name = _handle_new_session(dispatcher, session_name, pending)
                     continue
+                if _dream_requested(text):
+                    await _handle_dream(dispatcher, pending)
+                    continue
+                dream_log_limit = _dream_log_target(text)
+                if dream_log_limit is not None:
+                    await _handle_dream_log(dispatcher, dream_log_limit)
+                    continue
                 pending["count"] += 1
                 pending["changed"].clear()
                 await dispatcher.bus.publish_inbound(
@@ -262,6 +271,50 @@ def _handle_new_session(
     session_name = _create_new_cli_session(dispatcher)
     print(f"Started new session '{session_name}'")
     return session_name
+
+
+def _dream_requested(text: str) -> bool:
+    return text.strip().lower() == "/dream"
+
+
+def _dream_log_target(text: str) -> int | None:
+    stripped = text.strip()
+    lowered = stripped.lower()
+    if lowered == "/dream-log":
+        return _DEFAULT_DREAM_LOG_LIMIT
+    if lowered.startswith("/dream-log "):
+        argument = stripped[len("/dream-log "):].strip()
+        try:
+            return max(1, int(argument))
+        except ValueError:
+            return _DEFAULT_DREAM_LOG_LIMIT
+    return None
+
+
+async def _handle_dream(dispatcher: AgentDispatcher, pending: dict) -> None:
+    if pending["count"] > 0:
+        print("Cannot run dream while a turn is running. Use /stop first.")
+        return
+    dream = getattr(dispatcher.loop, "dream", None)
+    if dream is None or not dream.enabled:
+        print("Dream is not enabled. Set MYCLAW_DREAM_INTERVAL_MINUTES to enable it.")
+        return
+    print("Running dream consolidation...")
+    changed = await dream.run_once()
+    print("Dream consolidation complete." if changed else "Dream found nothing new to consolidate.")
+
+
+async def _handle_dream_log(dispatcher: AgentDispatcher, limit: int) -> None:
+    dream = getattr(dispatcher.loop, "dream", None)
+    if dream is None:
+        print("Dream is not available.")
+        return
+    entries = await dream.git.log(limit)
+    if not entries:
+        print("No dream history yet.")
+        return
+    for entry in entries:
+        print(f"{entry['hash']}  {entry['date']}  {entry['subject']}")
 
 
 def _create_new_cli_session(dispatcher: AgentDispatcher) -> str:

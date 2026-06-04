@@ -100,6 +100,33 @@ def test_build_agent_loop_reads_idle_compact_env(tmp_path, monkeypatch):
     assert loop.config.idle_compact_after_minutes == 15
 
 
+def test_build_agent_loop_reads_dream_interval_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_DREAM_INTERVAL_MINUTES", "120")
+
+    loop = build_agent_loop()
+
+    assert loop.config.dream_interval_minutes == 120
+    assert loop.dream.enabled is True
+
+
+def test_dream_command_parsing():
+    from myclaw.cli.commands import _dream_requested, _dream_log_target
+
+    assert _dream_requested("/dream") is True
+    assert _dream_requested("  /DREAM ") is True
+    # /dream-log must not be mistaken for /dream.
+    assert _dream_requested("/dream-log") is False
+
+    assert _dream_log_target("/dream-log") == 10
+    assert _dream_log_target("/dream-log 3") == 3
+    assert _dream_log_target("/dream-log bad") == 10
+    assert _dream_log_target("/dream") is None
+    assert _dream_log_target("hello") is None
+
+
 def test_build_agent_loop_rejects_invalid_idle_compact_env(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
