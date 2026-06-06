@@ -21,7 +21,11 @@ class TaskCreateTool(_TaskTool):
 
     @property
     def description(self) -> str:
-        return "Create a persistent task in the workspace task store."
+        return (
+            "Create a persistent task. Status flows one way: pending -> in_progress -> "
+            "completed (with blocked/cancelled branches). Use depends_on to link tasks; "
+            "the graph stays acyclic and a task cannot start until its dependencies complete."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -31,6 +35,11 @@ class TaskCreateTool(_TaskTool):
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "status": {"type": "string"},
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ids of tasks that must complete first",
+                },
             },
             "required": ["title"],
         }
@@ -39,11 +48,17 @@ class TaskCreateTool(_TaskTool):
         self,
         title: str | None = None,
         description: str = "",
-        status: str = "open",
+        status: str = "pending",
+        depends_on: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any] | str:
         try:
-            return self.store.create(title="" if title is None else title, description=description, status=status)
+            return self.store.create(
+                title="" if title is None else title,
+                description=description,
+                status=status,
+                depends_on=depends_on,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
 
@@ -110,7 +125,11 @@ class TaskUpdateTool(_TaskTool):
 
     @property
     def description(self) -> str:
-        return "Update title, description, status, or metadata for a persistent task."
+        return (
+            "Update title, description, status, depends_on, or metadata for a task. "
+            "Status changes must follow the one-way state machine; illegal transitions "
+            "and dependency cycles are rejected."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -121,6 +140,11 @@ class TaskUpdateTool(_TaskTool):
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "status": {"type": "string"},
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ids of tasks that must complete first",
+                },
                 "metadata": {"type": "object"},
             },
             "required": ["id"],
@@ -132,6 +156,7 @@ class TaskUpdateTool(_TaskTool):
         title: str | None = None,
         description: str | None = None,
         status: str | None = None,
+        depends_on: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any] | str:
@@ -143,6 +168,7 @@ class TaskUpdateTool(_TaskTool):
                 title=title,
                 description=description,
                 status=status,
+                depends_on=depends_on,
                 metadata=metadata,
             )
         except KeyError:

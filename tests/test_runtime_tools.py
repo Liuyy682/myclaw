@@ -198,14 +198,16 @@ def test_task_tools_persist_create_list_get_and_update(tmp_path):
 
     listed = asyncio.run(TaskListTool(store).execute())
     fetched = asyncio.run(TaskGetTool(store).execute(id=task_id))
-    updated = asyncio.run(TaskUpdateTool(store).execute(id=task_id, status="done"))
+    # Status follows the one-way machine: pending -> in_progress -> completed.
+    asyncio.run(TaskUpdateTool(store).execute(id=task_id, status="in_progress"))
+    updated = asyncio.run(TaskUpdateTool(store).execute(id=task_id, status="completed"))
     reloaded = TaskStore(tmp_path).get(task_id)
 
-    assert created["status"] == "open"
+    assert created["status"] == "pending"
     assert listed["tasks"][0]["id"] == task_id
     assert fetched["title"] == "Ship tools"
-    assert updated["status"] == "done"
-    assert reloaded["status"] == "done"
+    assert updated["status"] == "completed"
+    assert reloaded["status"] == "completed"
     assert (tmp_path / "tasks" / "tasks.json").exists()
 
 

@@ -154,3 +154,36 @@ If `bwrap` is missing or user namespaces are unavailable (some containers and CI
 (`rm -rf`, `mkfs`, `dd of=`, fork bombs, ...) and workspace-relative `cwd`
 checks as a second line of defense. The result includes a `sandboxed` flag
 indicating which path was used.
+
+## Persistent task graph
+
+Tasks persist to `tasks/tasks.json` and survive across sessions. The store
+(`myclaw/tasks/store.py`, exposed through the `task_create` / `task_list` /
+`task_get` / `task_update` tools) enforces three things:
+
+- **One-way state machine.** Status flows in a single direction:
+
+  ```text
+  pending ──▶ in_progress ──▶ completed
+     │             │
+     │             ├──▶ blocked ──▶ in_progress
+     ▼             ▼
+  cancelled    cancelled
+  ```
+
+  `completed` and `cancelled` are terminal. Illegal jumps (for example
+  `completed → in_progress`, or skipping straight from `pending` to
+  `completed`) are rejected. Setting a status to itself is an idempotent no-op.
+  Legacy `open` / `done` values from older task files are mapped to
+  `pending` / `completed` on read.
+
+- **Dependency links.** A task can declare `depends_on: [<id>, ...]`. Referenced
+  ids must exist, the dependency graph is kept acyclic (cycles are rejected via a
+  depth-first check), and a task cannot move to `in_progress` or `completed`
+  while any dependency is still unfinished.
+
+- **Multi-instance safety.** Every mutation takes an exclusive `flock` over
+  `tasks/tasks.json.lock` and runs a fresh load → mutate → atomic-write cycle, so
+  concurrent processes cannot lose each other's updates. The write itself uses the
+  same `tmp + os.replace` atomic pattern as the session and cron stores.
+
