@@ -5,7 +5,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest-tmp/
-docs/
+docs/*
+!docs/backend-api.md
 .codex/
 .agents/
 interview/
+webui/node_modules/
+webui/coverage/

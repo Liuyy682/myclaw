@@ -8,7 +8,9 @@ import sys
 from types import SimpleNamespace
 
 from myclaw.bus import MessageBus, OutboundMessage
+import myclaw.gateway as gateway_module
 from myclaw.gateway import HttpGatewayServer
+from myclaw.memory import MemoryStore
 from myclaw.session import Session, SessionManager
 
 
@@ -92,7 +94,10 @@ class DeltaDispatcher:
 
 def _history_dispatcher(manager):
     dispatcher = RecordingDispatcher()
-    dispatcher.loop = SimpleNamespace(session_manager=manager)
+    dispatcher.loop = SimpleNamespace(
+        session_manager=manager,
+        memory_store=MemoryStore(manager.workspace),
+    )
     return dispatcher
 
 
@@ -178,7 +183,15 @@ async def _with_server(dispatcher, scenario):
         await server.stop()
 
 
-def test_gateway_root_serves_static_webui():
+def test_gateway_root_serves_built_webui(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div><script src="/assets/app.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_module, "_WEB_DIST_DIR", dist)
+
     async def scenario(server):
         status, headers, body = await _request(server.port, "GET", "/")
         return status, headers, body
@@ -187,17 +200,39 @@ def test_gateway_root_serves_static_webui():
 
     assert status == 200
     assert headers["content-type"].startswith("text/html")
-    assert 'id="app"' in body
-    assert "new EventSource" in body
-    assert "fetch('/api/messages'" in body
-    assert "function renderMarkdown" in body
-    assert "row.innerHTML = renderMarkdown(text);" in body
-    assert "row.textContent = text;" in body
-    assert "fetch('/api/sessions'" in body
-    assert "currentSessionKey" in body
-    assert "session_key: currentSessionKey" in body
-    assert "message_delta" in body
-    assert "appendAssistantDelta" in body
+    assert 'id="root"' in body
+    assert 'src="/assets/app.js"' in body
+
+
+def test_repository_contains_production_webui_assets():
+    index = gateway_module._WEB_DIST_DIR / "index.html"
+
+    assert index.is_file()
+    html = index.read_text(encoding="utf-8")
+    assert '<div id="root"></div>' in html
+    assert "/assets/" in html
+
+
+def test_gateway_serves_static_assets_with_content_type_and_blocks_traversal(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (assets / "app.js").write_text("console.log('myclaw')", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(gateway_module, "_WEB_DIST_DIR", dist)
+
+    async def scenario(server):
+        asset = await _request(server.port, "GET", "/assets/app.js")
+        traversal = await _request(server.port, "GET", "/assets/%2e%2e/%2e%2e/secret.txt")
+        return asset, traversal
+
+    asset, traversal = asyncio.run(_with_server(RecordingDispatcher(), scenario))
+
+    assert asset[0] == 200
+    assert "javascript" in asset[1]["content-type"]
+    assert asset[2] == "console.log('myclaw')"
+    assert traversal[0] == 404
+    assert json.loads(traversal[2]) == {"error": "not found"}
 
 
 def test_gateway_post_message_publishes_inbound_and_streams_terminal_sse_event():
@@ -344,6 +379,40 @@ def test_gateway_reads_saved_session_display_messages(tmp_path):
     assert json.loads(missing[2]) == {"error": "session not found"}
 
 
+def test_gateway_reads_long_term_memory(tmp_path):
+    manager = SessionManager(tmp_path)
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("# Memory\n\nProject fact.", encoding="utf-8")
+    (memory_dir / "USER.md").write_text("# User\n\nPrefers concise answers.", encoding="utf-8")
+    (memory_dir / "SOUL.md").write_text("# Soul\n\nCalm and direct.", encoding="utf-8")
+
+    async def scenario(server):
+        return await _request(server.port, "GET", "/api/memory")
+
+    status, headers, body = asyncio.run(_with_server(_history_dispatcher(manager), scenario))
+
+    assert status == 200
+    assert headers["content-type"].startswith("application/json")
+    assert json.loads(body) == {
+        "memory": "# Memory\n\nProject fact.",
+        "user": "# User\n\nPrefers concise answers.",
+        "soul": "# Soul\n\nCalm and direct.",
+    }
+
+
+def test_gateway_returns_empty_strings_for_missing_memory_files(tmp_path):
+    manager = SessionManager(tmp_path)
+
+    async def scenario(server):
+        return await _request(server.port, "GET", "/api/memory")
+
+    status, _headers, body = asyncio.run(_with_server(_history_dispatcher(manager), scenario))
+
+    assert status == 200
+    assert json.loads(body) == {"memory": "", "user": "", "soul": ""}
+
+
 def test_gateway_sse_streams_tool_progress_and_final_events():
     async def scenario(server):
         reader, writer = await _open_sse(server.port, chat_id="direct")
@@ -409,10 +478,11 @@ def test_gateway_rejects_invalid_requests_with_json_errors():
         invalid_json = await _request(server.port, "POST", "/api/messages", "{")
         blank_content = await _request(server.port, "POST", "/api/messages", json.dumps({"content": "  "}))
         wrong_method = await _request(server.port, "GET", "/api/messages")
+        wrong_memory_method = await _request(server.port, "POST", "/api/memory", "{}")
         missing_route = await _request(server.port, "GET", "/missing")
-        return invalid_json, blank_content, wrong_method, missing_route
+        return invalid_json, blank_content, wrong_method, wrong_memory_method, missing_route
 
-    invalid_json, blank_content, wrong_method, missing_route = asyncio.run(
+    invalid_json, blank_content, wrong_method, wrong_memory_method, missing_route = asyncio.run(
         _with_server(RecordingDispatcher(), scenario)
     )
 
@@ -422,6 +492,8 @@ def test_gateway_rejects_invalid_requests_with_json_errors():
     assert json.loads(blank_content[2]) == {"error": "content must be a non-empty string"}
     assert wrong_method[0] == 405
     assert json.loads(wrong_method[2]) == {"error": "method not allowed"}
+    assert wrong_memory_method[0] == 405
+    assert json.loads(wrong_memory_method[2]) == {"error": "method not allowed"}
     assert missing_route[0] == 404
     assert json.loads(missing_route[2]) == {"error": "not found"}
 

@@ -1,32 +1,42 @@
 # myclaw
 
-Minimal personal assistant agent MVP.
+一个极简的个人助手 Agent MVP。
 
-Run one turn:
+单轮对话：
 
 ```bash
-python -m myclaw "hello"
-python -m myclaw --session work "hello"
+python -m myclaw "你好"
+python -m myclaw --session work "你好"
 ```
 
-Run interactively:
+交互式运行：
 
 ```bash
 python -m myclaw
 ```
 
-Run as a local HTTP gateway with WebUI:
+以本地 HTTP Gateway 和 WebUI 运行：
 
 ```bash
 python -m myclaw gateway
 python -m myclaw gateway --host 127.0.0.1 --port 8765
 ```
 
-Open:
+打开：
 
 ```text
 http://127.0.0.1:8765/
 ```
+
+React WebUI 已构建并包含在 Python 包中。开发前端时，请在一个终端运行 Gateway、在另一个终端运行 Vite 开发服务器：
+
+```bash
+cd webui
+npm install
+npm run dev
+```
+
+`npm run build` 会将生产环境资源输出到 `myclaw/web/dist`。HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 
 The WebUI posts messages to `/api/messages`, receives streamed replies from
 `/api/events`, and lists saved conversations from `/api/sessions`. Assistant
@@ -36,19 +46,18 @@ entry loads its user/assistant messages and sends future turns with that entry's
 `session_key`, so gateway sessions and CLI sessions can both be resumed. To send
 the literal one-shot message `gateway`, use `python -m myclaw -- gateway`.
 
-Interactive commands:
+交互式命令：
 
-- `/resume` lists CLI sessions with their generated titles.
-- `/resume <name>` switches to the named session, creating it if needed.
-- `/new` creates and switches to a new session.
-- `/clear` clears the current session history.
-- `/status` shows whether the current session is idle, running, or queued.
-- `/stop` cancels the current in-flight turn and keeps recovery checkpoint state.
+- `/resume`：列出带有自动生成标题的 CLI 会话。
+- `/resume <name>`：切换到指定会话；若不存在则创建。
+- `/new`：创建并切换到新会话。
+- `/clear`：清除当前会话历史。
+- `/status`：显示当前会话处于空闲、运行中或排队状态。
+- `/stop`：取消当前正在执行的轮次，并保留恢复检查点状态。
 
-Interactive mode starts in a new generated session unless `--session` is provided.
+除非传入 `--session`，否则交互模式会从一个自动生成的新会话开始。
 
-Without `OPENAI_API_KEY`, the CLI uses a local fake provider so the MVP runs offline.
-For a real OpenAI-compatible endpoint, create `.env` in the project root:
+未配置 `OPENAI_API_KEY` 时，CLI 会使用本地假 Provider，因此 MVP 可离线运行。若要使用真实的 OpenAI 兼容端点，请在项目根目录创建 `.env`：
 
 ```env
 OPENAI_API_KEY=...
@@ -56,19 +65,17 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-Existing shell environment variables take priority over `.env` values.
+已有的 Shell 环境变量优先于 `.env` 中的值。
 
-Optional idle compaction can be enabled with:
+可选的空闲压缩可通过以下配置启用：
 
 ```env
 MYCLAW_IDLE_COMPACT_AFTER_MINUTES=15
 ```
 
-The default is `0`, which disables auto-compact. When enabled, idle sessions are
-summarized before they are resumed and only the recent conversation tail is kept
-in the session file.
+默认值为 `0`，表示禁用自动压缩。启用后，空闲会话在恢复前会被总结，且会话文件中仅保留最近的对话尾部。
 
-## Dream: memory consolidation
+## Dream：记忆整合
 
 Dream is a periodic, two-phase job that runs off the main conversation loop and
 distills the compacted history stream (`memory/history.jsonl`) into long-term
@@ -100,7 +107,7 @@ stream is later truncated. A cursor at `memory/.dream_cursor` tracks the last
 consumed entry and always advances past a processed batch, so a failed cycle
 never wedges the system on the same entries.
 
-### Version tracking
+### 版本追踪
 
 Each consolidation that changes the memory files is committed to a git
 repository in the `memory/` directory, giving the memory an auditable,
@@ -118,7 +125,7 @@ Two interactive commands (CLI only):
 To revert, use git directly against the memory repo, for example
 `git -C ~/.myclaw/workspace/memory revert <hash>`.
 
-## MCP servers
+## MCP 服务器
 
 The assistant can attach tools from external [MCP](https://modelcontextprotocol.io)
 servers. Drop an optional `mcp.json` in the workspace (next to the `sessions/`
@@ -140,7 +147,7 @@ registered under namespaced names like `mcp__filesystem__read_file` so they
 never collide with built-in tools. Servers are shut down cleanly when the
 process exits. A missing or invalid `mcp.json` is ignored.
 
-## Sandboxed shell execution
+## 沙箱 Shell 执行
 
 The `exec` tool runs shell commands inside a [bubblewrap](https://github.com/containers/bubblewrap)
 (`bwrap`) sandbox when it is available:
@@ -155,7 +162,7 @@ If `bwrap` is missing or user namespaces are unavailable (some containers and CI
 checks as a second line of defense. The result includes a `sandboxed` flag
 indicating which path was used.
 
-## Persistent task graph
+## 持久化任务图
 
 Tasks persist to `tasks/tasks.json` and survive across sessions. The store
 (`myclaw/tasks/store.py`, exposed through the `task_create` / `task_list` /
@@ -186,4 +193,3 @@ Tasks persist to `tasks/tasks.json` and survive across sessions. The store
   `tasks/tasks.json.lock` and runs a fresh load → mutate → atomic-write cycle, so
   concurrent processes cannot lose each other's updates. The write itself uses the
   same `tmp + os.replace` atomic pattern as the session and cron stores.
-
