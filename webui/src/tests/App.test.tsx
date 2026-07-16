@@ -258,5 +258,7 @@ describe('MyClaw WebUI', () => {
     await user.click(await screen.findByRole('button', { name: /agent.request/ }))
     expect(await screen.findByText('llm.complete')).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Trace 详情' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '关闭 Trace 详情' }))
+    expect(screen.queryByRole('complementary', { name: 'Trace 详情' })).not.toBeInTheDocument()
   })
 })

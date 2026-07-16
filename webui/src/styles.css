@@ -236,7 +236,7 @@ textarea:focus-visible {
 .log-row button { border: 0; background: transparent; color: var(--accent); cursor: pointer; }
 .monitor-empty { width: 100%; min-height: 90px; display: grid; place-items: center; color: var(--muted); }
 .trace-drawer {
-  position: fixed; z-index: 31; top: 0; right: 0; bottom: 0; width: min(720px, 92vw); background: var(--surface);
+  position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: min(720px, 92vw); background: var(--surface);
   box-shadow: -18px 0 50px rgba(15, 23, 42, .16); overflow: auto;
 }
 .trace-drawer-header { padding: 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
