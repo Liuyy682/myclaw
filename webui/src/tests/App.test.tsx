@@ -149,6 +149,33 @@ describe('MyClaw WebUI', () => {
     expect(screen.getAllByText('正在重连').length).toBeGreaterThan(0)
   })
 
+  test('allows a reply while ask_user is waiting', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/sessions') return jsonResponse({ sessions: [] })
+      if (url === '/api/messages' && init?.method === 'POST') {
+        return jsonResponse({ id: 'req-ask', chat_id: 'web-test', accepted: true }, 202)
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    const input = await screen.findByLabelText('消息内容')
+    await user.type(input, '帮我选择{enter}')
+    const stream = MockEventSource.instances.at(-1)!
+
+    act(() => {
+      stream.emit({ type: 'ask', id: 'req-ask', chat_id: 'web-test', content: '请选择一个选项', terminal: false })
+    })
+
+    expect(screen.getByText('请选择一个选项')).toBeInTheDocument()
+    expect(input).not.toBeDisabled()
+    await user.type(input, '选 A{enter}')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+  })
+
   test('opens the read-only memory drawer and switches between memory sections', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)

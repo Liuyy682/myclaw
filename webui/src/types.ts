@@ -23,7 +23,7 @@ export interface MemoryPayload {
 }
 
 export interface GatewayEvent {
-  type: 'message_delta' | 'message' | 'tool_progress' | 'control' | 'error'
+  type: 'ask' | 'message_delta' | 'message' | 'tool_progress' | 'control' | 'error'
   id?: string
   chat_id: string
   content: string

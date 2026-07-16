@@ -144,6 +144,9 @@ function App() {
       setIsSending(false)
       void refreshSessions()
     }
+    if (event.type === 'ask') {
+      setIsSending(false)
+    }
   }, [active.chatId, refreshSessions])
 
   useEffect(() => {
