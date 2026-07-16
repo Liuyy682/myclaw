@@ -52,6 +52,8 @@ class RunResult:
     content: str
     messages: list[Message]
     model: str
+    stop_reason: str = "completed"
+    error: str | None = None
 
 
 @dataclass(slots=True)

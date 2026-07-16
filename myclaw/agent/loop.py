@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import contextlib
 from typing import Any
 
 from myclaw.agent.autocompact import AutoCompactManager
@@ -10,6 +11,7 @@ from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
 from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
+from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, SpanHandle, current_trace_context
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager, TranscriptStore
 from myclaw.tools import ToolRegistry
@@ -32,8 +34,13 @@ class AgentLoop:
         *,
         session_manager: SessionManager,
         tool_registry: ToolRegistry | None = None,
+        observability: ObservabilityRuntime | None = None,
     ) -> None:
         self.provider = provider
+        self.observability = observability or ObservabilityRuntime(
+            session_manager.workspace,
+            ObservabilityConfig(enabled=False),
+        )
         self.config = config or AgentConfig()
         if self.config.max_turns < 1:
             raise ValueError("max_turns must be at least 1")
@@ -69,6 +76,7 @@ class AgentLoop:
             self.memory_store,
             self.config,
             model=self.config.model or self.provider.model,
+            observability=self.observability,
         )
         self.dream = DreamManager(
             session_manager,
@@ -76,6 +84,7 @@ class AgentLoop:
             self.memory_store,
             self.config,
             model=self.config.model or self.provider.model,
+            observability=self.observability,
         )
         self.tool_registry = tool_registry
 
@@ -95,24 +104,80 @@ class AgentLoop:
         if not user_text:
             raise ValueError("user input cannot be empty")
 
-        session = self.session_manager.get_or_create(session_key)
-        if self._restore_incomplete_turn(session):
-            self.session_manager.save(session)
-        if await self.auto_compact.prepare_session(session_key):
+        trace_id = str((metadata or {}).get("trace_id") or "") or None
+        trace_scope = (
+            contextlib.nullcontext(SpanHandle())
+            if current_trace_context() is not None
+            else self.observability.trace(
+                "agent.request",
+                "conversation",
+                request_id=str((metadata or {}).get("request_id") or ""),
+                session_key=session_key,
+                channel=channel,
+                model=self.config.model or self.provider.model,
+                trace_id=trace_id,
+            )
+        )
+        with trace_scope as trace:
+            with self.observability.span("agent.turn", "agent") as turn:
+                result = await self._run_turn(
+                    user_text,
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                    metadata=metadata,
+                    progress_callback=progress_callback,
+                    stream_callback=stream_callback,
+                    ask_callback=ask_callback,
+                )
+                if result.error:
+                    turn.set_error(result.error, error_type="AgentRunError")
+                    trace.set_error(result.error, error_type="AgentRunError")
+                turn.set_attribute("stop_reason", result.stop_reason)
+                return result
+
+    async def _run_turn(
+        self,
+        user_text: str,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str | None,
+        metadata: dict[str, Any] | None,
+        progress_callback: ProgressCallback | None,
+        stream_callback: StreamCallback | None,
+        ask_callback: AskCallback | None,
+    ) -> RunResult:
+
+        with self.observability.span("context.prepare", "agent") as prepare_span:
             session = self.session_manager.get_or_create(session_key)
-        memory_text = self.memory_store.read_memory()
-        if await self.context_budget.ensure_budget(
-            session,
-            self.config,
-            user_text,
-            model=self.config.model or self.provider.model,
-            memory_text=memory_text,
-            archive_history=self.memory_store.append_history,
-        ):
-            self.session_manager.save(session)
-        messages = self._messages_for_run(session, user_text, memory_text)
-        self._mark_pending_user_turn(session, user_text)
-        self.transcript.append(session_key, session.messages[-1])
+            if self._restore_incomplete_turn(session):
+                self.session_manager.save(session)
+            compacted = await self.auto_compact.prepare_session(session_key)
+            if compacted:
+                session = self.session_manager.get_or_create(session_key)
+            memory_text = self.memory_store.read_memory()
+            summarized = await self.context_budget.ensure_budget(
+                session,
+                self.config,
+                user_text,
+                model=self.config.model or self.provider.model,
+                memory_text=memory_text,
+                archive_history=self.memory_store.append_history,
+            )
+            if summarized:
+                self.session_manager.save(session)
+            prepare_span.set_attribute("auto_compacted", compacted)
+            prepare_span.set_attribute("context_summarized", summarized)
+            prepare_span.set_attribute("history_messages", len(session.messages))
+            prepare_span.set_attribute("memory_chars", len(memory_text))
+        with self.observability.span("context.build", "agent") as build_span:
+            messages = self._messages_for_run(session, user_text, memory_text)
+            build_span.set_attribute("message_count", len(messages))
+            build_span.set_attribute("input_chars", len(user_text))
+        with self.observability.span("session.persist_input", "storage"):
+            self._mark_pending_user_turn(session, user_text)
+            self.transcript.append(session_key, session.messages[-1])
 
         result = await self.runner.run(
             AgentRunSpec(
@@ -127,17 +192,21 @@ class AgentLoop:
                 stream_callback=stream_callback,
             )
         )
-        self._persist_turn(session, result.messages)
-        self.transcript.append_many(session_key, result.messages)
-        self._clear_pending_user_turn(session)
-        self._clear_runtime_checkpoint(session)
-        await self._ensure_session_title(session)
-        self.session_manager.save(session)
+        with self.observability.span("session.persist_output", "storage") as persist_span:
+            self._persist_turn(session, result.messages)
+            self.transcript.append_many(session_key, result.messages)
+            self._clear_pending_user_turn(session)
+            self._clear_runtime_checkpoint(session)
+            await self._ensure_session_title(session)
+            self.session_manager.save(session)
+            persist_span.set_attribute("generated_messages", len(result.messages))
         run_messages = messages + [dict(message) for message in result.messages]
         return RunResult(
             content=result.content,
             messages=run_messages,
             model=self.config.model or self.provider.model,
+            stop_reason=result.stop_reason,
+            error=result.error,
         )
 
     def reset_session(self, session_key: str) -> None:
@@ -165,21 +234,28 @@ class AgentLoop:
             {"role": "system", "content": self.config.system_prompt},
             {"role": "user", "content": sub_prompt},
         ]
-        result = await self.runner.run(
-            AgentRunSpec(
-                messages=messages,
-                model=model,
-                max_iterations=min(self.config.max_turns, 4),
-                tools=registry,
-                max_tool_result_chars=self.config.max_tool_result_chars,
-                tool_context=ToolRuntimeContext(
-                    session_key=f"subagent:{name or 'subtask'}",
-                    channel="subagent",
-                    workspace=self.session_manager.workspace,
-                    tool_names=sorted(registry.tool_names),
-                ),
+        with self.observability.span(
+            "subagent.run",
+            "agent",
+            attributes={"name": name or "subtask", "prompt_chars": len(sub_prompt)},
+        ) as span:
+            result = await self.runner.run(
+                AgentRunSpec(
+                    messages=messages,
+                    model=model,
+                    max_iterations=min(self.config.max_turns, 4),
+                    tools=registry,
+                    max_tool_result_chars=self.config.max_tool_result_chars,
+                    tool_context=ToolRuntimeContext(
+                        session_key=f"subagent:{name or 'subtask'}",
+                        channel="subagent",
+                        workspace=self.session_manager.workspace,
+                        tool_names=sorted(registry.tool_names),
+                    ),
+                )
             )
-        )
+            if result.error:
+                span.set_error(result.error, error_type="SubagentRunError")
         return result.content
 
     async def _ensure_session_title(self, session: Session) -> None:

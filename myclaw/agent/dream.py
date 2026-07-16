@@ -13,6 +13,7 @@ from myclaw.session import SessionManager
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import ToolRuntimeContext
 from myclaw.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
+from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, current_trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,16 @@ class DreamManager:
         config: AgentConfig,
         *,
         model: str,
+        observability: ObservabilityRuntime | None = None,
     ) -> None:
         self.session_manager = session_manager
         self.provider = provider
         self.memory_store = memory_store
         self.config = config
         self.model = model
+        self.observability = observability or ObservabilityRuntime(
+            session_manager.workspace, ObservabilityConfig(enabled=False)
+        )
         self.runner = AgentRunner(provider)
         self.memory_dir = memory_store.memory_dir
         self.git = MemoryGit(self.memory_dir)
@@ -109,7 +114,15 @@ class DreamManager:
             return False
         self.running = True
         try:
-            return await self._run_once()
+            scope = (
+                self.observability.span("dream.run", "background")
+                if current_trace_context() is not None
+                else self.observability.trace("dream.run", "dream", model=self.model)
+            )
+            with scope as span:
+                changed = await self._run_once()
+                span.set_attribute("changed", changed)
+                return changed
         except Exception:
             logger.exception("Dream consolidation failed")
             return False

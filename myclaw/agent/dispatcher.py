@@ -1,18 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.loop import AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
+from myclaw.observability import SpanHandle
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
 class _SessionDispatchState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     ref_count: int = 0
+
+
+class _NoopObservability:
+    config = type("Config", (), {"enabled": False})()
+
+    def trace(self, *args, **kwargs):
+        return contextlib.nullcontext(SpanHandle())
+
+    def span(self, *args, **kwargs):
+        return contextlib.nullcontext(SpanHandle())
+
+    def record_completed_span(self, *args, **kwargs) -> None:
+        return None
 
 
 class AgentDispatcher:
@@ -24,6 +45,7 @@ class AgentDispatcher:
     def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
         self.bus = bus
         self.loop = loop
+        self.observability = getattr(loop, "observability", _NoopObservability())
         self.ask = AskCoordinator(bus)
         self._session_states: dict[str, _SessionDispatchState] = {}
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -90,26 +112,40 @@ class AgentDispatcher:
         job_id = str(job.get("id") or "job")
         job_name = str(job.get("name") or job_id)
         metadata = {"cron_job_id": job_id, "cron_job_name": job_name}
-        try:
-            result = await self.loop.run(
-                str(job.get("prompt") or ""),
-                session_key=str(job.get("session_key") or f"cron:{job_id}"),
-                channel="cron",
-                chat_id=job_id,
-                metadata=metadata,
-            )
-            content = result.content
-        except Exception as exc:
-            content = f"Error: {exc}"
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel="cron",
-                chat_id=job_id,
-                content=content,
-                metadata=metadata,
-                event_type="cron",
-            )
-        )
+        trace_id = uuid.uuid4().hex if self.observability.config.enabled else ""
+        if trace_id:
+            metadata["trace_id"] = trace_id
+        with self.observability.trace(
+            "cron.job", "cron", request_id=job_id,
+            session_key=str(job.get("session_key") or f"cron:{job_id}"),
+            channel="cron", model=self._model(),
+            trace_id=trace_id or None, attributes={"cron_job_id": job_id, "cron_job_name": job_name},
+        ) as trace:
+            try:
+                result = await self.loop.run(
+                    str(job.get("prompt") or ""),
+                    session_key=str(job.get("session_key") or f"cron:{job_id}"),
+                    channel="cron",
+                    chat_id=job_id,
+                    metadata=metadata,
+                )
+                content = result.content
+                if getattr(result, "error", None):
+                    trace.set_error(result.error, error_type="CronAgentError")
+            except Exception as exc:
+                trace.set_error(exc)
+                logger.exception("Cron job failed: %s", job_id)
+                content = f"Error: {exc}"
+            with self.observability.span("outbound.publish", "queue"):
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel="cron",
+                        chat_id=job_id,
+                        content=content,
+                        metadata=metadata,
+                        event_type="cron",
+                    )
+                )
 
     def _schedule_background(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -117,40 +153,70 @@ class AgentDispatcher:
         task.add_done_callback(self._active_tasks.discard)
 
     async def _process_agent_message(self, msg: InboundMessage) -> None:
+        metadata = dict(msg.metadata)
+        trace_id = str(metadata.get("trace_id") or "")
+        if not trace_id and self.observability.config.enabled:
+            trace_id = uuid.uuid4().hex
+            metadata["trace_id"] = trace_id
         state = self._retain_session_state(msg.session_key)
         try:
-            async with state.lock:
-                current_task = asyncio.current_task()
-                if current_task is not None:
-                    self._active_session_tasks[msg.session_key] = current_task
-                try:
-                    run_kwargs = {
-                        "session_key": msg.session_key,
-                        "channel": msg.channel,
-                        "chat_id": msg.chat_id,
-                        "metadata": dict(msg.metadata),
-                        "progress_callback": lambda payload: self._publish_progress(msg, payload),
-                        "ask_callback": lambda question, choices: self.ask.ask(
-                            msg.session_key, question, choices
-                        ),
-                    }
-                    if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
-                        run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta)
-                    result = await self.loop.run(msg.content, **run_kwargs)
-                    content = result.content
-                except Exception as exc:
-                    content = f"Error: {exc}"
-                finally:
-                    if self._active_session_tasks.get(msg.session_key) is current_task:
-                        del self._active_session_tasks[msg.session_key]
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=content,
-                        metadata=dict(msg.metadata),
-                    )
-                )
+            with self.observability.trace(
+                "agent.request", "conversation",
+                request_id=str(metadata.get("request_id") or ""),
+                session_key=msg.session_key,
+                channel=msg.channel,
+                model=self._model(),
+                attributes={"input_chars": len(msg.content)},
+                started_at=msg.timestamp,
+                trace_id=trace_id or None,
+            ) as trace:
+                with self.observability.span("dispatcher.process", "agent"):
+                    async with state.lock:
+                        self.observability.record_completed_span(
+                            "queue.wait", "queue", started_at=msg.timestamp, ended_at=datetime.now(UTC),
+                            attributes={"inbound_queue_size": self.bus.inbound_size},
+                        )
+                        current_task = asyncio.current_task()
+                        if current_task is not None:
+                            self._active_session_tasks[msg.session_key] = current_task
+                        try:
+                            run_kwargs = {
+                                "session_key": msg.session_key,
+                                "channel": msg.channel,
+                                "chat_id": msg.chat_id,
+                                "metadata": metadata,
+                                "progress_callback": lambda payload: self._publish_progress(msg, payload, metadata),
+                                "ask_callback": lambda question, choices: self.ask.ask(
+                                    msg.session_key, question, choices
+                                ),
+                            }
+                            if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
+                                run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta, metadata)
+                            result = await self.loop.run(msg.content, **run_kwargs)
+                            content = result.content
+                            if getattr(result, "error", None):
+                                trace.set_error(result.error, error_type="AgentRunError")
+                            trace.set_attribute("stop_reason", getattr(result, "stop_reason", "completed"))
+                        except asyncio.CancelledError:
+                            trace.set_status("cancelled")
+                            raise
+                        except Exception as exc:
+                            trace.set_error(exc)
+                            logger.exception("Agent request failed for %s", msg.session_key)
+                            content = f"Error: {exc}"
+                        finally:
+                            if self._active_session_tasks.get(msg.session_key) is current_task:
+                                del self._active_session_tasks[msg.session_key]
+                        with self.observability.span("outbound.publish", "queue"):
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content=content,
+                                    metadata=metadata,
+                                )
+                            )
+                        logger.info("Agent request completed")
         finally:
             self._release_session_state(msg.session_key, state)
 
@@ -162,13 +228,23 @@ class AgentDispatcher:
         return None
 
     async def _process_control_message(self, msg: InboundMessage, command: str) -> None:
-        if command == "/status":
-            content = self._session_status(msg.session_key)
-        elif command == "/stop":
-            content = await self._stop_session(msg.session_key)
-        else:
-            content = self._clear_session(msg.session_key)
-        await self._publish_control(msg, content)
+        metadata = dict(msg.metadata)
+        trace_id = str(metadata.get("trace_id") or "")
+        if not trace_id and self.observability.config.enabled:
+            trace_id = uuid.uuid4().hex
+            metadata["trace_id"] = trace_id
+        with self.observability.trace(
+            "control.command", "control", request_id=str(metadata.get("request_id") or ""),
+            session_key=msg.session_key, channel=msg.channel, trace_id=trace_id or None,
+            attributes={"command": command},
+        ):
+            if command == "/status":
+                content = self._session_status(msg.session_key)
+            elif command == "/stop":
+                content = await self._stop_session(msg.session_key)
+            else:
+                content = self._clear_session(msg.session_key)
+            await self._publish_control(msg, content, metadata)
 
     def _session_status(self, session_key: str) -> str:
         active_task = self._active_session_tasks.get(session_key)
@@ -202,24 +278,26 @@ class AgentDispatcher:
         self.loop.reset_session(session_key)
         return "Cleared current session."
 
-    async def _publish_control(self, msg: InboundMessage, content: str) -> None:
+    async def _publish_control(
+        self, msg: InboundMessage, content: str, base_metadata: dict | None = None
+    ) -> None:
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content=content,
-                metadata=dict(msg.metadata),
+                metadata=dict(base_metadata or msg.metadata),
                 event_type="control",
             )
         )
 
-    async def _publish_progress(self, msg: InboundMessage, payload: dict) -> None:
+    async def _publish_progress(self, msg: InboundMessage, payload: dict, base_metadata: dict | None = None) -> None:
         event = payload.get("event")
         tool_name = str(payload.get("tool_name") or "tool")
         index = payload.get("index")
         total = payload.get("total")
         action = "Finished" if event == "tool_completed" else "Running"
-        metadata = dict(msg.metadata)
+        metadata = dict(base_metadata or msg.metadata)
         metadata["session_key"] = msg.session_key
         metadata["progress"] = dict(payload)
         await self.bus.publish_outbound(
@@ -233,8 +311,10 @@ class AgentDispatcher:
             )
         )
 
-    async def _publish_message_delta(self, msg: InboundMessage, delta: str) -> None:
-        metadata = dict(msg.metadata)
+    async def _publish_message_delta(
+        self, msg: InboundMessage, delta: str, base_metadata: dict | None = None
+    ) -> None:
+        metadata = dict(base_metadata or msg.metadata)
         metadata["session_key"] = msg.session_key
         await self.bus.publish_outbound(
             OutboundMessage(
@@ -254,6 +334,12 @@ class AgentDispatcher:
             self._session_states[session_key] = state
         state.ref_count += 1
         return state
+
+    def _model(self) -> str:
+        config = getattr(self.loop, "config", None)
+        configured = getattr(config, "model", "")
+        provider = getattr(self.loop, "provider", None)
+        return configured or getattr(provider, "model", "")
 
     def _release_session_state(self, session_key: str, state: _SessionDispatchState) -> None:
         state.ref_count -= 1

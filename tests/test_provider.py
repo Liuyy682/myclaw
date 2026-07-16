@@ -209,6 +209,39 @@ def test_openai_compatible_provider_streams_text_deltas(monkeypatch):
     assert content == "hello world"
     assert deltas == ["hello", " world"]
     assert captured["body"]["stream"] is True
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+
+
+def test_openai_compatible_provider_parses_usage_from_regular_and_stream_responses(monkeypatch):
+    responses = iter(
+        [
+            FakeHTTPResponse(
+                {
+                    "choices": [{"message": {"content": "hello"}}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+                }
+            ),
+            FakeHTTPStreamResponse(
+                [
+                    _stream_line({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}),
+                    _stream_line({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}}),
+                    "data: [DONE]\n\n",
+                ]
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: next(responses))
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+
+    regular = asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+    streamed = asyncio.run(provider.stream_complete([{"role": "user", "content": "hi"}]))
+
+    assert isinstance(regular, LLMResponse)
+    assert regular.usage is not None and regular.usage.total_tokens == 6
+    assert isinstance(streamed, LLMResponse)
+    assert streamed.content == "hi"
+    assert streamed.usage is not None and streamed.usage.prompt_tokens == 5
 
 
 def test_openai_compatible_provider_streams_tool_call_deltas(monkeypatch):

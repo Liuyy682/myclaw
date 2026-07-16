@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot,
+  Activity,
   BrainCircuit,
   ChevronRight,
   Menu,
@@ -16,6 +17,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getMemory, getSession, listSessions, openEventStream, sendMessage } from './api'
+import MonitoringPage from './MonitoringPage'
 import type {
   ConnectionState,
   GatewayEvent,
@@ -65,6 +67,7 @@ function markdown(content: string) {
 }
 
 function App() {
+  const [view, setView] = useState<'chat' | 'monitor'>('chat')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionsError, setSessionsError] = useState('')
@@ -160,6 +163,7 @@ function App() {
   }, [messages])
 
   const startNewConversation = useCallback(() => {
+    setView('chat')
     setActive({ chatId: createChatId(), sessionKey: null, title: '新对话' })
     setMessages([])
     setDraft('')
@@ -169,6 +173,7 @@ function App() {
   }, [])
 
   const selectSession = useCallback(async (session: SessionSummary) => {
+    setView('chat')
     if (session.key === active.sessionKey) {
       setSidebarOpen(false)
       return
@@ -286,6 +291,14 @@ function App() {
           新建对话
         </button>
 
+        <button
+          className={`monitor-nav-button ${view === 'monitor' ? 'active' : ''}`}
+          onClick={() => { setView('monitor'); setSidebarOpen(false) }}
+        >
+          <Activity size={18} />
+          运行监控
+        </button>
+
         <div className="sidebar-section-title">
           <span>最近对话</span>
           <button
@@ -333,7 +346,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="chat-panel">
+      {view === 'monitor' ? <MonitoringPage onBack={() => setView('chat')} /> : <main className="chat-panel">
         <header className="chat-header">
           <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开会话栏">
             <Menu size={20} />
@@ -412,7 +425,7 @@ function App() {
           </div>
           <p>Enter 发送 · Shift + Enter 换行 · 你的数据仅保存在本地</p>
         </form>
-      </main>
+      </main>}
 
       {memoryOpen && (
         <>

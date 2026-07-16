@@ -25,11 +25,19 @@ class ToolCallRequest:
 
 
 @dataclass(slots=True)
+class LLMUsage:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(slots=True)
 class LLMResponse:
     content: str
     final: bool = True
     stop_reason: str = "completed"
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    usage: LLMUsage | None = None
 
     @property
     def has_tool_calls(self) -> bool:

@@ -28,6 +28,7 @@ from myclaw.config import (
 )
 from myclaw.gateway import run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
+from myclaw.observability import ObservabilityRuntime, ObservedProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
 
@@ -37,17 +38,18 @@ _DEFAULT_DREAM_LOG_LIMIT = 10
 def build_agent_loop() -> AgentLoop:
     load_env_file()
     session_manager = SessionManager()
+    observability = ObservabilityRuntime(session_manager.workspace)
     tool_registry = build_default_tool_registry(Path.cwd(), memory_workspace=session_manager.workspace)
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
     idle_compact_after_minutes = _env_int(IDLE_COMPACT_AFTER_MINUTES_ENV_VAR, default=0)
     dream_interval_minutes = _env_int(DREAM_INTERVAL_MINUTES_ENV_VAR, default=0)
     api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:
-        provider = OpenAICompatibleProvider(
+        provider = ObservedProvider(OpenAICompatibleProvider(
             api_key=api_key,
             base_url=os.environ.get(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL),
             model=model,
-        )
+        ), observability)
         return AgentLoop(
             provider,
             AgentConfig(
@@ -58,9 +60,10 @@ def build_agent_loop() -> AgentLoop:
             ),
             session_manager=session_manager,
             tool_registry=tool_registry,
+            observability=observability,
         )
     return AgentLoop(
-        FakeProvider(),
+        ObservedProvider(FakeProvider(), observability),
         AgentConfig(
             model=FAKE_PROVIDER_MODEL,
             auto_title=True,
@@ -69,6 +72,7 @@ def build_agent_loop() -> AgentLoop:
         ),
         session_manager=session_manager,
         tool_registry=tool_registry,
+        observability=observability,
     )
 
 

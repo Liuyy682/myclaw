@@ -198,12 +198,14 @@ class AgentRunner:
                     final=False,
                     stop_reason=response.stop_reason if response.stop_reason else "tool_calls",
                     tool_calls=list(response.tool_calls),
+                    usage=response.usage,
                 )
             content = response.content.strip() if response.content.strip() else "(empty response)"
             return LLMResponse(
                 content=content,
                 final=response.final,
                 stop_reason=response.stop_reason if response.final else "continue",
+                usage=response.usage,
             )
         content = response.strip() if response.strip() else "(empty response)"
         return LLMResponse(content=content)

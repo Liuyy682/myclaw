@@ -186,4 +186,50 @@ describe('MyClaw WebUI', () => {
     expect(input).toHaveValue('第一行\n第二行')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  test('opens monitoring, shows metrics, and displays a trace waterfall', async () => {
+    const trace = {
+      trace_id: 'a'.repeat(32), root_span_id: 'b'.repeat(16), request_id: 'req-1',
+      name: 'agent.request', kind: 'conversation', status: 'ok',
+      started_at: new Date().toISOString(), ended_at: new Date().toISOString(), duration_ms: 120,
+      session_key: 'gateway:direct', channel: 'gateway', model: 'fake',
+      error_type: null, error_message: null, attributes: {},
+      prompt_tokens: 4, completion_tokens: 2, total_tokens: 6,
+    }
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/sessions') return jsonResponse({ sessions: [] })
+      if (url.startsWith('/api/observability/summary')) return jsonResponse({
+        window: '24h', since: new Date().toISOString(), generated_at: new Date().toISOString(),
+        requests: 1, running: 0, errors: 0, success_rate: 1,
+        duration_ms: { p50: 120, p95: 120 }, queue_wait_ms: { p95: 2 },
+        llm_calls: 1, tool_calls: 0, tool_errors: 0,
+        tokens: { prompt: 4, completion: 2, total: 6, available: true },
+        series: [{ bucket: new Date().toISOString(), requests: 1, errors: 0 }],
+      })
+      if (url.startsWith('/api/observability/traces?')) return jsonResponse({ traces: [trace] })
+      if (url.startsWith('/api/observability/logs')) return jsonResponse({ logs: [] })
+      if (url === `/api/observability/traces/${trace.trace_id}`) return jsonResponse({
+        trace,
+        spans: [{
+          span_id: 'c'.repeat(16), trace_id: trace.trace_id, parent_span_id: trace.root_span_id,
+          name: 'llm.complete', kind: 'llm', status: 'ok',
+          started_at: trace.started_at, ended_at: trace.ended_at, duration_ms: 90,
+          error_type: null, error_message: null, attributes: { model: 'fake' },
+          prompt_tokens: 4, completion_tokens: 2, total_tokens: 6,
+        }],
+        logs: [],
+      })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: '运行监控' }))
+    expect(await screen.findByText('100.0%')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: /agent.request/ }))
+    expect(await screen.findByText('llm.complete')).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Trace 详情' })).toBeInTheDocument()
+  })
 })

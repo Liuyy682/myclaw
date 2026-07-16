@@ -1,4 +1,14 @@
-import type { GatewayEvent, MemoryPayload, SessionDetail, SessionSummary } from './types'
+import type {
+  GatewayEvent,
+  MemoryPayload,
+  ObservabilityLog,
+  ObservabilitySummary,
+  SessionDetail,
+  SessionSummary,
+  TraceDetail,
+  TraceStatus,
+  TraceSummary,
+} from './types'
 
 async function readJson<T>(response: Response): Promise<T> {
   const payload = (await response.json()) as T & { error?: string }
@@ -28,7 +38,7 @@ export async function sendMessage(input: {
   chatId: string
   content: string
   sessionKey: string | null
-}): Promise<{ id: string; chat_id: string; accepted: boolean }> {
+}): Promise<{ id: string; trace_id: string; chat_id: string; accepted: boolean }> {
   const body: { chat_id: string; content: string; session_key?: string } = {
     chat_id: input.chatId,
     content: input.content,
@@ -41,6 +51,52 @@ export async function sendMessage(input: {
     body: JSON.stringify(body),
   })
   return readJson(response)
+}
+
+export async function getObservabilitySummary(window = '24h'): Promise<ObservabilitySummary> {
+  const response = await fetch(`/api/observability/summary?window=${encodeURIComponent(window)}`)
+  return readJson<ObservabilitySummary>(response)
+}
+
+export async function listTraces(input: {
+  window?: string
+  status?: TraceStatus | ''
+  sessionKey?: string
+  limit?: number
+} = {}): Promise<TraceSummary[]> {
+  const query = new URLSearchParams({
+    window: input.window || '24h',
+    limit: String(input.limit || 50),
+  })
+  if (input.status) query.set('status', input.status)
+  if (input.sessionKey) query.set('session_key', input.sessionKey)
+  const response = await fetch(`/api/observability/traces?${query}`)
+  const payload = await readJson<{ traces: TraceSummary[] }>(response)
+  return payload.traces
+}
+
+export async function getTrace(traceId: string): Promise<TraceDetail> {
+  const response = await fetch(`/api/observability/traces/${encodeURIComponent(traceId)}`)
+  return readJson<TraceDetail>(response)
+}
+
+export async function listObservabilityLogs(input: {
+  window?: string
+  level?: string
+  traceId?: string
+  query?: string
+  limit?: number
+} = {}): Promise<ObservabilityLog[]> {
+  const query = new URLSearchParams({
+    window: input.window || '24h',
+    limit: String(input.limit || 200),
+  })
+  if (input.level) query.set('level', input.level)
+  if (input.traceId) query.set('trace_id', input.traceId)
+  if (input.query) query.set('query', input.query)
+  const response = await fetch(`/api/observability/logs?${query}`)
+  const payload = await readJson<{ logs: ObservabilityLog[] }>(response)
+  return payload.logs
 }
 
 export function openEventStream(

@@ -15,7 +15,7 @@ from myclaw.agent import (
 )
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.gateway import run_gateway
-from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, OpenAICompatibleProvider
+from myclaw.providers import FakeProvider, LLMProvider, LLMResponse, LLMUsage, OpenAICompatibleProvider
 from myclaw.session import Session, SessionManager
 from myclaw.tools import (
     AskUserTool,
@@ -67,6 +67,7 @@ __all__ = [
     "InboundMessage",
     "LLMProvider",
     "LLMResponse",
+    "LLMUsage",
     "ListDirTool",
     "MessageBus",
     "MessageTool",

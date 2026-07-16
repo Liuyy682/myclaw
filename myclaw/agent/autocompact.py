@@ -10,6 +10,7 @@ from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetMana
 from myclaw.agent.types import AgentConfig, Message
 from myclaw.memory import MemoryStore
 from myclaw.session import Session, SessionManager
+from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, current_trace_context
 
 AUTO_COMPACT_PENDING_SUMMARY_METADATA_KEY = "auto_compact_pending_summary"
 
@@ -27,12 +28,16 @@ class AutoCompactManager:
         config: AgentConfig,
         *,
         model: str,
+        observability: ObservabilityRuntime | None = None,
     ) -> None:
         self.session_manager = session_manager
         self.context_budget = context_budget
         self.memory_store = memory_store
         self.config = config
         self.model = model
+        self.observability = observability or ObservabilityRuntime(
+            session_manager.workspace, ObservabilityConfig(enabled=False)
+        )
         self._archiving: set[str] = set()
         self._archive_events: dict[str, asyncio.Event] = {}
 
@@ -82,7 +87,7 @@ class AutoCompactManager:
             return False
         self._start_archiving(session_key)
         try:
-            return await self._compact_session(session_key)
+            return await self._run_observed(session_key)
         except Exception:
             logger.exception("Auto-compact failed for %s", session_key)
             return False
@@ -91,12 +96,25 @@ class AutoCompactManager:
 
     async def _compact_archiving_session(self, session_key: str) -> bool:
         try:
-            return await self._compact_session(session_key)
+            return await self._run_observed(session_key)
         except Exception:
             logger.exception("Auto-compact failed for %s", session_key)
             return False
         finally:
             self._finish_archiving(session_key)
+
+    async def _run_observed(self, session_key: str) -> bool:
+        scope = (
+            self.observability.span("autocompact.session", "background", attributes={"session_key": session_key})
+            if current_trace_context() is not None
+            else self.observability.trace(
+                "autocompact.session", "autocompact", session_key=session_key, model=self.model,
+            )
+        )
+        with scope as span:
+            changed = await self._compact_session(session_key)
+            span.set_attribute("changed", changed)
+            return changed
 
     async def _compact_session(self, session_key: str) -> bool:
         session = self.session_manager.get_or_create(session_key)

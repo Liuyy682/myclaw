@@ -34,6 +34,10 @@ class DispatcherRuntime:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        loop = getattr(self.dispatcher, "loop", None)
+        observability = getattr(loop, "observability", None)
+        if observability is not None:
+            observability.start()
         await self._start_mcp()
         self._task = asyncio.create_task(self.dispatcher.run())
         await asyncio.sleep(0)
@@ -41,6 +45,10 @@ class DispatcherRuntime:
     async def stop(self) -> None:
         if self._task is None:
             await self._stop_mcp()
+            loop = getattr(self.dispatcher, "loop", None)
+            observability = getattr(loop, "observability", None)
+            if observability is not None:
+                observability.stop()
             return
         task = self._task
         self._task = None
@@ -49,6 +57,10 @@ class DispatcherRuntime:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         await self._stop_mcp()
+        loop = getattr(self.dispatcher, "loop", None)
+        observability = getattr(loop, "observability", None)
+        if observability is not None:
+            observability.stop()
 
     async def _start_mcp(self) -> None:
         if not self.enable_mcp or self._mcp_manager is not None:

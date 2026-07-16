@@ -7,10 +7,12 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider
 from myclaw.bus import MessageBus, OutboundMessage
 import myclaw.gateway as gateway_module
 from myclaw.gateway import HttpGatewayServer
 from myclaw.memory import MemoryStore
+from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, ObservedProvider
 from myclaw.session import Session, SessionManager
 
 
@@ -258,9 +260,11 @@ def test_gateway_post_message_publishes_inbound_and_streams_terminal_sse_event()
     assert response["accepted"] is True
     assert response["chat_id"] == "alpha"
     request_id = response["id"]
+    trace_id = response["trace_id"]
+    assert len(trace_id) == 32
     assert dispatcher.run_calls == 1
     assert dispatcher.received == [
-        ("gateway", "alpha", "hello", {"request_id": request_id}, None),
+        ("gateway", "alpha", "hello", {"request_id": request_id, "trace_id": trace_id}, None),
     ]
     assert event == {
         "type": "message",
@@ -268,7 +272,7 @@ def test_gateway_post_message_publishes_inbound_and_streams_terminal_sse_event()
         "chat_id": "alpha",
         "content": "ack: hello",
         "terminal": True,
-        "metadata": {"request_id": request_id},
+        "metadata": {"request_id": request_id, "trace_id": trace_id},
     }
 
 
@@ -293,8 +297,12 @@ def test_gateway_post_message_passes_session_key_override():
 
     assert status == 202
     request_id = response["id"]
+    trace_id = response["trace_id"]
     assert dispatcher.received == [
-        ("gateway", "cli:direct", "resume", {"request_id": request_id}, "cli:direct"),
+        (
+            "gateway", "cli:direct", "resume",
+            {"request_id": request_id, "trace_id": trace_id}, "cli:direct",
+        ),
     ]
     assert event["chat_id"] == "cli:direct"
     assert event["content"] == "ack: resume"
@@ -411,6 +419,89 @@ def test_gateway_returns_empty_strings_for_missing_memory_files(tmp_path):
 
     assert status == 200
     assert json.loads(body) == {"memory": "", "user": "", "soul": ""}
+
+
+def test_gateway_queries_observability_summary_traces_detail_and_logs(tmp_path):
+    manager = SessionManager(tmp_path)
+    runtime = ObservabilityRuntime(
+        tmp_path,
+        ObservabilityConfig(enabled=True, log_level="INFO", retention_days=7, max_bytes=100 * 1024 * 1024),
+    )
+    trace_id = "d" * 32
+    with runtime.trace(
+        "agent.request", "conversation", trace_id=trace_id,
+        request_id="req-observe", session_key="gateway:direct", channel="gateway", model="fake",
+    ):
+        with runtime.span("llm.complete", "llm") as span:
+            span.set_usage(3, 2, 5)
+
+    dispatcher = _history_dispatcher(manager)
+    dispatcher.loop.observability = runtime
+
+    async def scenario(server):
+        summary = await _request(server.port, "GET", "/api/observability/summary?window=1h")
+        traces = await _request(server.port, "GET", "/api/observability/traces?window=1h&limit=10")
+        detail = await _request(server.port, "GET", f"/api/observability/traces/{trace_id}")
+        logs = await _request(server.port, "GET", "/api/observability/logs?window=1h")
+        invalid = await _request(server.port, "GET", "/api/observability/traces?limit=999")
+        return summary, traces, detail, logs, invalid
+
+    summary, traces, detail, logs, invalid = asyncio.run(_with_server(dispatcher, scenario))
+
+    assert summary[0] == 200
+    assert json.loads(summary[2])["tokens"]["total"] == 5
+    assert json.loads(traces[2])["traces"][0]["trace_id"] == trace_id
+    detail_payload = json.loads(detail[2])
+    assert detail[0] == 200
+    assert detail_payload["trace"]["status"] == "ok"
+    assert detail_payload["spans"][0]["name"] == "llm.complete"
+    assert logs[0] == 200
+    assert invalid[0] == 400
+
+
+def test_gateway_message_trace_covers_dispatcher_agent_provider_and_persistence(tmp_path):
+    manager = SessionManager(tmp_path)
+    runtime = ObservabilityRuntime(
+        tmp_path,
+        ObservabilityConfig(enabled=True, log_level="INFO", retention_days=7, max_bytes=100 * 1024 * 1024),
+    )
+    provider = ObservedProvider(FakeProvider(), runtime)
+    loop = AgentLoop(
+        provider,
+        AgentConfig(model="fake", auto_title=False),
+        session_manager=manager,
+        observability=runtime,
+    )
+    dispatcher = AgentDispatcher(MessageBus(), loop)
+
+    async def scenario(server):
+        reader, writer = await _open_sse(server.port, chat_id="observed")
+        posted = await _request(
+            server.port, "POST", "/api/messages", json.dumps({"chat_id": "observed", "content": "hello"})
+        )
+        terminal = await _read_sse_json(reader)
+        await asyncio.sleep(0.05)
+        trace_id = json.loads(posted[2])["trace_id"]
+        detail = await _request(server.port, "GET", f"/api/observability/traces/{trace_id}")
+        writer.close()
+        await writer.wait_closed()
+        return posted, terminal, detail
+
+    posted, terminal, detail = asyncio.run(_with_server(dispatcher, scenario))
+    payload = json.loads(detail[2])
+    names = {span["name"] for span in payload["spans"]}
+
+    assert posted[0] == 202
+    assert terminal["metadata"]["trace_id"] == json.loads(posted[2])["trace_id"]
+    assert detail[0] == 200
+    assert payload["trace"]["status"] == "ok"
+    assert {
+        "queue.wait", "dispatcher.process", "agent.turn", "context.prepare",
+        "context.build", "llm.complete", "session.persist_input",
+        "session.persist_output", "outbound.publish",
+    } <= names
+    assert any(log["component"] == "myclaw.agent.dispatcher" for log in payload["logs"])
+    assert b"hello" not in runtime.store.path.read_bytes()
 
 
 def test_gateway_sse_streams_tool_progress_and_final_events():

@@ -67,6 +67,24 @@ OPENAI_MODEL=gpt-4o-mini
 
 已有的 Shell 环境变量优先于 `.env` 中的值。
 
+## 本地运行监控
+
+日志、Trace 和聚合指标默认写入工作区的
+`observability/observability.db`，Gateway WebUI 左侧的“运行监控”可查看请求概览、
+Span 瀑布图和结构化日志。默认不保存提示词、回复正文、工具参数值或工具结果。
+
+```env
+MYCLAW_OBSERVABILITY_ENABLED=1
+MYCLAW_LOG_LEVEL=INFO
+MYCLAW_LOG_FORMAT=console
+MYCLAW_OBSERVABILITY_RETENTION_DAYS=7
+MYCLAW_OBSERVABILITY_MAX_MB=100
+```
+
+设置 `MYCLAW_LOG_FORMAT=json` 可输出 JSON 控制台日志；关闭观测时将
+`MYCLAW_OBSERVABILITY_ENABLED` 设为 `0`。Token 只使用模型端点返回的真实 usage，
+缺失时监控页显示为未知。
+
 可选的空闲压缩可通过以下配置启用：
 
 ```env

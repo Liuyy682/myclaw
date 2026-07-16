@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from myclaw.config import DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_TIMEOUT_SECONDS
-from myclaw.providers.base import LLMResponse, Message, ToolCallRequest
+from myclaw.providers.base import LLMResponse, LLMUsage, Message, ToolCallRequest
 
 
 @dataclass(slots=True)
@@ -88,6 +88,7 @@ class OpenAICompatibleProvider:
             "model": self.model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             request_body["tools"] = tools
@@ -112,6 +113,7 @@ class OpenAICompatibleProvider:
             raise RuntimeError(f"LLM request failed: {exc.reason}") from exc
 
     def _parse_response(self, data: dict[str, Any]) -> str | LLMResponse:
+        usage = self._parse_usage(data.get("usage"))
         try:
             choice = data["choices"][0]
             message = choice["message"]
@@ -129,6 +131,7 @@ class OpenAICompatibleProvider:
                 final=False,
                 stop_reason=str(choice.get("finish_reason") or "tool_calls"),
                 tool_calls=tool_calls,
+                usage=usage,
             )
 
         try:
@@ -137,12 +140,15 @@ class OpenAICompatibleProvider:
             raise RuntimeError("LLM response did not include choices[0].message.content") from exc
         if not isinstance(content, str):
             raise RuntimeError("LLM response content was not text")
+        if usage is not None:
+            return LLMResponse(content=content, usage=usage)
         return content
 
     def _parse_stream_response(self, response: Any, emit_delta: Callable[[str], None] | None) -> str | LLMResponse:
         content_parts: list[str] = []
         tool_call_parts: dict[int, dict[str, Any]] = {}
         finish_reason = ""
+        usage: LLMUsage | None = None
 
         for raw_line in response:
             line = raw_line.decode("utf-8").strip()
@@ -153,8 +159,19 @@ class OpenAICompatibleProvider:
                 break
             try:
                 data = json.loads(data_text)
-                choice = data["choices"][0]
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RuntimeError("LLM stream response did not include choices[0].delta") from exc
+            parsed_usage = self._parse_usage(data.get("usage")) if isinstance(data, dict) else None
+            if parsed_usage is not None:
+                usage = parsed_usage
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not choices:
+                if parsed_usage is not None:
+                    continue
+                raise RuntimeError("LLM stream response did not include choices[0].delta")
+            try:
+                choice = choices[0]
+            except (IndexError, TypeError) as exc:
                 raise RuntimeError("LLM stream response did not include choices[0].delta") from exc
 
             if choice.get("finish_reason"):
@@ -185,8 +202,27 @@ class OpenAICompatibleProvider:
                 final=False,
                 stop_reason=finish_reason or "tool_calls",
                 tool_calls=tool_calls,
+                usage=usage,
             )
+        if usage is not None:
+            return LLMResponse(content=content, usage=usage)
         return content
+
+    @staticmethod
+    def _parse_usage(raw_usage: Any) -> LLMUsage | None:
+        if not isinstance(raw_usage, dict):
+            return None
+
+        def token(name: str) -> int | None:
+            value = raw_usage.get(name)
+            return value if isinstance(value, int) and value >= 0 else None
+
+        prompt = token("prompt_tokens")
+        completion = token("completion_tokens")
+        total = token("total_tokens")
+        if prompt is None and completion is None and total is None:
+            return None
+        return LLMUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
 
     @staticmethod
     def _accumulate_stream_tool_calls(tool_call_parts: dict[int, dict[str, Any]], raw_tool_calls: Any) -> None:

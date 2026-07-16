@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import contextlib
 from typing import Any
 
 from myclaw.providers.base import ToolCallRequest
 from myclaw.config import TOOL_RESULT_TRUNCATED_TEMPLATE
 from myclaw.tools.base import Tool, ToolRuntimeContext, tool_context
+from myclaw.observability import SpanHandle, current_observability
 
 
 class ToolRegistry:
@@ -75,21 +77,39 @@ class ToolRegistry:
         max_result_chars: int | None = None,
         context: ToolRuntimeContext | None = None,
     ) -> str:
-        tool, arguments, error = self.prepare_call(request)
-        if error is not None:
-            return self._truncate_result(error, max_result_chars)
+        observability = current_observability()
+        scope = (
+            observability.span(
+                "tool.execute",
+                "tool",
+                attributes={
+                    "tool_name": request.name,
+                    "argument_keys": sorted(request.arguments) if isinstance(request.arguments, dict) else [],
+                },
+            )
+            if observability is not None
+            else contextlib.nullcontext(SpanHandle())
+        )
+        with scope as span:
+            tool, arguments, error = self.prepare_call(request)
+            if error is not None:
+                span.set_error(error, error_type="ToolPreparationError")
+                return self._truncate_result(error, max_result_chars)
 
-        try:
-            assert tool is not None
-            runtime_context = self._runtime_context(context)
-            set_context = getattr(tool, "set_context", None)
-            if callable(set_context):
-                set_context(runtime_context)
-            with tool_context(runtime_context):
-                result = await tool.execute(**arguments)
-        except Exception as exc:
-            return self._truncate_result(f"Error executing {request.name}: {exc}", max_result_chars)
-        return self._truncate_result(self._normalize_result(result), max_result_chars)
+            try:
+                assert tool is not None
+                runtime_context = self._runtime_context(context)
+                set_context = getattr(tool, "set_context", None)
+                if callable(set_context):
+                    set_context(runtime_context)
+                with tool_context(runtime_context):
+                    result = await tool.execute(**arguments)
+            except Exception as exc:
+                span.set_error(exc, error_type=type(exc).__name__)
+                return self._truncate_result(f"Error executing {request.name}: {exc}", max_result_chars)
+            normalized = self._normalize_result(result)
+            span.set_attribute("result_chars", len(normalized))
+            return self._truncate_result(normalized, max_result_chars)
 
     @staticmethod
     def _tool_schema(tool: Tool) -> dict[str, Any]:

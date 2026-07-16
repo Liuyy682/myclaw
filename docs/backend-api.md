@@ -31,12 +31,14 @@ Accepted response (`202`):
 ```json
 {
   "id": "request-id",
+  "trace_id": "32-character-trace-id",
   "chat_id": "direct",
   "accepted": true
 }
 ```
 
-Validation failures return `400` with `{ "error": "..." }`.
+Validation failures return `400` with `{ "error": "..." }`. `trace_id`
+correlates the accepted request, SSE events, structured logs, and execution trace.
 
 ## Stream events
 
@@ -53,6 +55,7 @@ The response is an SSE stream (`text/event-stream`). Each event is sent as one `
   "terminal": false,
   "metadata": {
     "request_id": "request-id",
+    "trace_id": "32-character-trace-id",
     "session_key": "gateway:direct"
   }
 }
@@ -128,6 +131,39 @@ Response (`200`):
 ```
 
 The fields correspond to `MEMORY.md`, `USER.md`, and `SOUL.md` in the active workspace memory directory. Missing files are represented by empty strings. The endpoint is read-only and does not expose compacted `history.jsonl` entries.
+
+## Observability
+
+Observability data is metadata-only by default and is stored in
+`observability/observability.db` under the active workspace.
+
+### Summary
+
+`GET /api/observability/summary?window=24h`
+
+Returns request totals, running/error counts, success rate, P50/P95 duration,
+P95 queue wait, LLM/tool counts, provider-supplied token totals, and an hourly
+trend series. `window` accepts positive hour/day values up to 30 days, such as
+`1h`, `24h`, or `7d`.
+
+### Traces
+
+`GET /api/observability/traces`
+
+Optional filters are `window`, `status`, `kind`, `session_key`, `before`, and
+`limit`. The default limit is 50 and the maximum is 200. The response contains
+`traces` plus `next_before` for pagination.
+
+`GET /api/observability/traces/{trace_id}` returns one root `trace`, its ordered
+`spans`, and correlated `logs`. A missing trace returns `404`.
+
+### Logs
+
+`GET /api/observability/logs`
+
+Optional filters are `window`, `level`, `component`, `trace_id`, `query`,
+`before`, and `limit`. The default limit is 200 and the maximum is 500.
+Observability endpoints are read-only and return `503` when collection is disabled.
 
 ## Errors and methods
 

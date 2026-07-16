@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import mimetypes
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -24,6 +27,7 @@ from myclaw.session import Session
 
 
 _WEB_DIST_DIR = Path(__file__).resolve().parent / "web" / "dist"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -105,6 +109,7 @@ class HttpGatewayServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._fanout_task
             self._fanout_task = None
+        logger.info("Gateway stopped")
         await self._runtime.stop()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -134,6 +139,34 @@ class HttpGatewayServer:
                     await _send_json(writer, 405, {"error": "method not allowed"})
                     return
                 await self._handle_memory(writer)
+                return
+
+            if request.path == "/api/observability/summary":
+                if request.method != "GET":
+                    await _send_json(writer, 405, {"error": "method not allowed"})
+                    return
+                await self._handle_observability_summary(writer, request)
+                return
+
+            if request.path == "/api/observability/traces":
+                if request.method != "GET":
+                    await _send_json(writer, 405, {"error": "method not allowed"})
+                    return
+                await self._handle_observability_traces(writer, request)
+                return
+
+            if request.path.startswith("/api/observability/traces/"):
+                if request.method != "GET":
+                    await _send_json(writer, 405, {"error": "method not allowed"})
+                    return
+                await self._handle_observability_trace_detail(writer, request)
+                return
+
+            if request.path == "/api/observability/logs":
+                if request.method != "GET":
+                    await _send_json(writer, 405, {"error": "method not allowed"})
+                    return
+                await self._handle_observability_logs(writer, request)
                 return
 
             if request.path == "/api/events":
@@ -178,17 +211,26 @@ class HttpGatewayServer:
             return
 
         request_id = uuid.uuid4().hex
+        trace_id = uuid.uuid4().hex
         await self.dispatcher.bus.publish_inbound(
             InboundMessage(
                 channel=GATEWAY_CHANNEL,
                 sender_id="user",
                 chat_id=chat_id,
                 content=content,
-                metadata={"request_id": request_id},
+                metadata={"request_id": request_id, "trace_id": trace_id},
                 session_key_override=session_key,
             )
         )
-        await _send_json(writer, 202, {"id": request_id, "chat_id": chat_id, "accepted": True})
+        logger.info(
+            "Gateway request accepted",
+            extra={"trace_id": trace_id, "request_id": request_id, "session_key": session_key or f"gateway:{chat_id}"},
+        )
+        await _send_json(
+            writer,
+            202,
+            {"id": request_id, "trace_id": trace_id, "chat_id": chat_id, "accepted": True},
+        )
 
     async def _handle_sessions(self, writer: asyncio.StreamWriter, request: _HttpRequest) -> None:
         sessions = self.dispatcher.loop.session_manager.list_sessions()
@@ -223,6 +265,124 @@ class HttpGatewayServer:
                 "soul": store.read_soul(),
             },
         )
+
+    async def _handle_observability_summary(
+        self, writer: asyncio.StreamWriter, request: _HttpRequest
+    ) -> None:
+        runtime = self._observability_runtime()
+        if runtime is None or not runtime.config.enabled:
+            await _send_json(writer, 503, {"error": "observability is disabled"})
+            return
+        try:
+            window, since = _observability_window(request.query, default="24h")
+        except ValueError as exc:
+            await _send_json(writer, 400, {"error": str(exc)})
+            return
+        payload = await asyncio.to_thread(runtime.summary, since)
+        payload.update({"window": window, "since": since, "generated_at": _utc_now()})
+        await _send_json(writer, 200, payload)
+
+    async def _handle_observability_traces(
+        self, writer: asyncio.StreamWriter, request: _HttpRequest
+    ) -> None:
+        runtime = self._observability_runtime()
+        if runtime is None or not runtime.config.enabled:
+            await _send_json(writer, 503, {"error": "observability is disabled"})
+            return
+        try:
+            window, since = _observability_window(request.query, default="24h")
+            limit = _query_limit(request.query, default=50, maximum=200)
+            status = _validated_choice(request.query, "status", {"running", "ok", "error", "cancelled", "abandoned"})
+            kind = _validated_choice(
+                request.query, "kind", {"conversation", "control", "cron", "dream", "autocompact"}
+            )
+            session_key = _first_query_value(request.query, "session_key")
+            before = _validated_datetime(request.query, "before")
+        except ValueError as exc:
+            await _send_json(writer, 400, {"error": str(exc)})
+            return
+        traces = await asyncio.to_thread(
+            runtime.list_traces,
+            since,
+            status=status,
+            kind=kind,
+            session_key=session_key,
+            before=before,
+            limit=limit,
+        )
+        await _send_json(
+            writer,
+            200,
+            {
+                "window": window,
+                "traces": traces,
+                "next_before": traces[-1]["started_at"] if len(traces) == limit else None,
+            },
+        )
+
+    async def _handle_observability_trace_detail(
+        self, writer: asyncio.StreamWriter, request: _HttpRequest
+    ) -> None:
+        runtime = self._observability_runtime()
+        if runtime is None or not runtime.config.enabled:
+            await _send_json(writer, 503, {"error": "observability is disabled"})
+            return
+        trace_id = request.path.removeprefix("/api/observability/traces/")
+        if not re.fullmatch(r"[0-9a-f]{32}", trace_id):
+            await _send_json(writer, 400, {"error": "trace_id must be 32 lowercase hexadecimal characters"})
+            return
+        detail = await asyncio.to_thread(runtime.trace_detail, trace_id)
+        if detail is None:
+            await _send_json(writer, 404, {"error": "trace not found"})
+            return
+        await _send_json(writer, 200, detail)
+
+    async def _handle_observability_logs(
+        self, writer: asyncio.StreamWriter, request: _HttpRequest
+    ) -> None:
+        runtime = self._observability_runtime()
+        if runtime is None or not runtime.config.enabled:
+            await _send_json(writer, 503, {"error": "observability is disabled"})
+            return
+        try:
+            window, since = _observability_window(request.query, default="1h")
+            limit = _query_limit(request.query, default=200, maximum=500)
+            level = _validated_choice(request.query, "level", {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+            component = _first_query_value(request.query, "component")
+            trace_id = _first_query_value(request.query, "trace_id")
+            if trace_id is not None and not re.fullmatch(r"[0-9a-f]{32}", trace_id):
+                raise ValueError("trace_id must be 32 lowercase hexadecimal characters")
+            query = _first_query_value(request.query, "query")
+            before = _validated_datetime(request.query, "before")
+        except ValueError as exc:
+            await _send_json(writer, 400, {"error": str(exc)})
+            return
+        logs = await asyncio.to_thread(
+            runtime.list_logs,
+            since,
+            level=level,
+            component=component,
+            trace_id=trace_id,
+            query=query,
+            before=before,
+            limit=limit,
+        )
+        await _send_json(
+            writer,
+            200,
+            {
+                "window": window,
+                "logs": logs,
+                "next_before": logs[-1]["timestamp"] if len(logs) == limit else None,
+            },
+        )
+
+    def _observability_runtime(self):
+        runtime = getattr(self.dispatcher, "observability", None)
+        if runtime is not None:
+            return runtime
+        loop = getattr(self.dispatcher, "loop", None)
+        return getattr(loop, "observability", None)
 
     async def _handle_sse(self, writer: asyncio.StreamWriter, request: _HttpRequest) -> None:
         chat_id = _first_query_value(request.query, "chat_id") or DEFAULT_GATEWAY_CHAT_ID
@@ -272,6 +432,7 @@ async def run_gateway(
     server = HttpGatewayServer(dispatcher, host=host, port=port)
     await server.start()
     print(f"Gateway listening on {server.url}", file=sys.stderr, flush=True)
+    logger.info("Gateway started on %s", server.url)
     try:
         await server.serve_forever()
     finally:
@@ -360,6 +521,7 @@ async def _send_response(
         400: "Bad Request",
         404: "Not Found",
         405: "Method Not Allowed",
+        503: "Service Unavailable",
     }.get(status, "Error")
     writer.write(
         (
@@ -451,3 +613,53 @@ def _first_query_value(query: dict[str, list[str]], key: str) -> str | None:
         return None
     value = values[0]
     return value if value else None
+
+
+def _observability_window(query: dict[str, list[str]], *, default: str) -> tuple[str, str]:
+    window = _first_query_value(query, "window") or default
+    match = re.fullmatch(r"([1-9][0-9]*)([hd])", window)
+    if match is None:
+        raise ValueError("window must use a positive hour/day value such as 1h, 24h, or 7d")
+    amount = int(match.group(1))
+    duration = timedelta(hours=amount) if match.group(2) == "h" else timedelta(days=amount)
+    if duration > timedelta(days=30):
+        raise ValueError("window cannot exceed 30 days")
+    since = (datetime.now(UTC) - duration).isoformat()
+    return window, since
+
+
+def _query_limit(query: dict[str, list[str]], *, default: int, maximum: int) -> int:
+    raw = _first_query_value(query, "limit")
+    if raw is None:
+        return default
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise ValueError("limit must be an integer") from exc
+    if limit < 1 or limit > maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
+    return limit
+
+
+def _validated_choice(
+    query: dict[str, list[str]], key: str, allowed: set[str]
+) -> str | None:
+    value = _first_query_value(query, key)
+    if value is not None and value not in allowed:
+        raise ValueError(f"{key} must be one of: {', '.join(sorted(allowed))}")
+    return value
+
+
+def _validated_datetime(query: dict[str, list[str]], key: str) -> str | None:
+    value = _first_query_value(query, key)
+    if value is None:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an ISO-8601 timestamp") from exc
+    return value
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
