@@ -114,6 +114,8 @@ function App() {
   const [memoryLoading, setMemoryLoading] = useState(false)
   const [memoryError, setMemoryError] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const pendingAskRequestIdsRef = useRef(new Set<string>())
+  const answeredAskRequestIdsRef = useRef(new Set<string>())
 
   const refreshSessions = useCallback(async () => {
     setSessionsError('')
@@ -133,6 +135,7 @@ function App() {
   const handleGatewayEvent = useCallback((event: GatewayEvent) => {
     const requestId = event.id || event.metadata?.request_id || active.chatId
     const assistantId = `assistant:${requestId}`
+    const moveAssistantAfterAnswer = answeredAskRequestIdsRef.current.has(requestId)
 
     if (event.type === 'message_delta') {
       setMessages((current) => {
@@ -140,19 +143,25 @@ function App() {
         if (index < 0) {
           return [...current, { id: assistantId, role: 'assistant', content: event.content }]
         }
-        return current.map((item, itemIndex) => itemIndex === index
-          ? { ...item, content: item.content + event.content }
-          : item)
+        const assistant = { ...current[index], content: current[index].content + event.content }
+        return moveAssistantAfterAnswer
+          ? [...current.filter((item) => item.id !== assistantId), assistant]
+          : current.map((item, itemIndex) => itemIndex === index ? assistant : item)
       })
       return
     }
 
     if (event.type === 'message') {
       setMessages((current) => {
-        const exists = current.some((item) => item.id === assistantId)
-        return exists
-          ? current.map((item) => item.id === assistantId ? { ...item, content: event.content } : item)
-          : [...current, { id: assistantId, role: 'assistant', content: event.content }]
+        const existing = current.find((item) => item.id === assistantId)
+        const assistant = existing
+          ? { ...existing, content: event.content }
+          : { id: assistantId, role: 'assistant' as const, content: event.content }
+        return existing && moveAssistantAfterAnswer
+          ? [...current.filter((item) => item.id !== assistantId), assistant]
+          : existing
+            ? current.map((item) => item.id === assistantId ? assistant : item)
+            : [...current, assistant]
       })
     } else if (event.type === 'tool_progress') {
       const tool = toolActivity(event)
@@ -187,7 +196,12 @@ function App() {
       void refreshSessions()
     }
     if (event.type === 'ask') {
+      pendingAskRequestIdsRef.current.add(requestId)
       setIsSending(false)
+    }
+    if (event.terminal) {
+      pendingAskRequestIdsRef.current.delete(requestId)
+      answeredAskRequestIdsRef.current.delete(requestId)
     }
   }, [active.chatId, refreshSessions])
 
@@ -256,6 +270,9 @@ function App() {
 
     const optimisticId = `user:${Date.now()}`
     setMessages((current) => [...current, { id: optimisticId, role: 'user', content }])
+    for (const requestId of pendingAskRequestIdsRef.current) {
+      answeredAskRequestIdsRef.current.add(requestId)
+    }
     setDraft('')
     setIsSending(true)
     try {

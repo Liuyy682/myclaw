@@ -172,6 +172,7 @@ describe('MyClaw WebUI', () => {
     const stream = MockEventSource.instances.at(-1)!
 
     act(() => {
+      stream.emit({ type: 'message_delta', id: 'req-ask', chat_id: 'web-test', content: '我需要确认：', terminal: false })
       stream.emit({ type: 'ask', id: 'req-ask', chat_id: 'web-test', content: '请选择一个选项', terminal: false })
     })
 
@@ -179,6 +180,11 @@ describe('MyClaw WebUI', () => {
     expect(input).not.toBeDisabled()
     await user.type(input, '选 A{enter}')
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    act(() => {
+      stream.emit({ type: 'message', id: 'req-ask', chat_id: 'web-test', content: '已按选 A 继续。', terminal: true })
+    })
+    const rows = Array.from(document.querySelectorAll('.message-row')).map((row) => row.textContent)
+    expect(rows.indexOf('选 A')).toBeLessThan(rows.indexOf('已按选 A 继续。'))
   })
 
   test('opens the read-only memory drawer and switches between memory sections', async () => {
