@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _HISTORY_ENTRY_MAX_CHARS = 4_000
 _PHASE2_MAX_ITERATIONS = 15
+_CHECKLIST_PATTERN = re.compile(r"^\[(SOUL|USER|MEMORY)(-REMOVE)?\]\s+(.+?)\s*$")
+_SOURCE_TAG_PATTERN = re.compile(r"⟨(\d+)⟩")
+_TARGET_PRIORITY = {"SOUL": 0, "USER": 1, "MEMORY": 2}
 
 _PHASE1_SYSTEM = (
     "You consolidate long-term memory for a personal assistant. You are given new "
@@ -33,11 +38,32 @@ _PHASE1_SYSTEM = (
     "  [SOUL-REMOVE] <text> -- <reason>\n"
     "  [USER-REMOVE] <text> -- <reason>\n"
     "  [MEMORY-REMOVE] <text> -- <reason>\n\n"
-    "Rules:\n"
+    "Classification rules (the three files are mutually exclusive):\n"
+    "1. [MEMORY] is the only destination for projects, repositories, tasks, technical designs, "
+    "runtime configuration, scheduled jobs, operational state, business context, and decisions.\n"
+    "2. [USER] is only for stable, cross-project user identity, habits, and communication or "
+    "working preferences. Never put project-specific information in USER.md.\n"
+    "3. [SOUL] is only for persona, tone, or lasting assistant behaviour that the user explicitly "
+    "asked the assistant to adopt. Never infer SOUL facts from how one task was performed, and "
+    "never put user or project information in SOUL.md.\n"
+    "4. Skip temporary status, one-off requests, execution output, and uncertain facts.\n"
+    "Apply this routing order to every candidate: project/task/technical/operational -> MEMORY; "
+    "otherwise stable cross-project user fact -> USER; otherwise explicit assistant-persona rule "
+    "-> SOUL; otherwise skip. One fact must have exactly one authoritative destination.\n\n"
+    "Examples:\n"
+    "- 'A cron job reports CPU and memory every 10 minutes' -> MEMORY only, not USER or SOUL.\n"
+    "- 'The user is developing MyClaw with a Python agent loop' -> MEMORY only.\n"
+    "- 'The user prefers reviewing plans before implementation' -> USER.\n"
+    "- 'The assistant should always answer calmly and directly' -> SOUL only when explicitly requested.\n\n"
+    "Consolidation and migration rules:\n"
     "- Extract only durable, reusable facts. Skip transient chatter.\n"
-    "- Actively de-duplicate: if a fact already exists in any memory file, do NOT re-add it; "
-    "instead emit a *-REMOVE line for redundant or superseded existing entries.\n"
-    "- User preferences, identity, and persona are permanent regardless of age.\n"
+    "- Actively audit all three current files for wrong-file and semantic duplicates. If a fact "
+    "already exists in its correct file, do not re-add it and keep that authoritative copy.\n"
+    "- Remove redundant or superseded copies from other files. For a project/task fact incorrectly "
+    "stored in USER.md or SOUL.md, keep/add the MEMORY.md copy and emit the corresponding REMOVE lines.\n"
+    "- Never remove a wrong-file fact unless an equivalent authoritative copy already exists or a "
+    "new [MEMORY] line in this checklist is supported by a supplied source id.\n"
+    "- Stable user identity/preferences and explicit persona rules do not expire merely because they are old.\n"
     "- Only prune things that are objectively obsolete (resolved issues, superseded decisions).\n"
     "- For [MEMORY] facts, always append the source id in angle brackets, e.g. ⟨42⟩.\n"
     "- If nothing should change, output exactly: (nothing)"
@@ -46,7 +72,7 @@ _PHASE1_SYSTEM = (
 _PHASE2_SYSTEM = (
     "You are editing the assistant's long-term memory files using file tools. "
     "The memory directory contains SOUL.md, USER.md, and MEMORY.md. You are given a "
-    "consolidation checklist. Apply it precisely:\n"
+    "validated consolidation checklist. Apply it precisely without reclassifying facts:\n"
     "- Use read_file to inspect a file, then edit_file for surgical incremental edits. "
     "Use write_file ONLY to create a file that does not exist yet.\n"
     "- NEVER rewrite a whole file from scratch; make minimal additions/removals.\n"
@@ -55,6 +81,14 @@ _PHASE2_SYSTEM = (
     "- For *-REMOVE lines, delete the matching line(s) from the named file.\n"
     "- Keep each file a tidy markdown bullet list. When done, reply with a one-line summary."
 )
+
+
+@dataclass(frozen=True)
+class _ChecklistInstruction:
+    line: str
+    target: str
+    action: str
+    normalized_fact: str
 
 
 class DreamManager:
@@ -136,8 +170,12 @@ class DreamManager:
             return False
         last_id = max(entry["id"] for entry in entries)
         try:
-            checklist = await self._phase1_analyze(entries)
-            if checklist and checklist.strip().lower() != "(nothing)":
+            raw_checklist = await self._phase1_analyze(entries)
+            checklist = self._validate_checklist(
+                raw_checklist,
+                {int(entry["id"]) for entry in entries},
+            )
+            if checklist != "(nothing)":
                 await self._phase2_apply(checklist)
                 await self._commit_memory(checklist)
         finally:
@@ -208,6 +246,103 @@ class DreamManager:
                 ),
             )
         )
+
+    def _validate_checklist(self, checklist: str, valid_source_ids: set[int]) -> str:
+        if checklist.strip().lower() == "(nothing)":
+            return "(nothing)"
+
+        instructions: list[_ChecklistInstruction] = []
+        invalid_memory_adds: set[str] = set()
+        rejected = 0
+        for raw_line in checklist.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            instruction = self._parse_instruction(line, valid_source_ids)
+            if instruction is None:
+                match = _CHECKLIST_PATTERN.fullmatch(line)
+                if match and match.group(1) == "MEMORY" and match.group(2) is None:
+                    invalid_memory_adds.add(self._normalize_fact(match.group(3)))
+                rejected += 1
+                continue
+            instructions.append(instruction)
+
+        actions_by_fact = {}
+        for instruction in instructions:
+            key = (instruction.target, instruction.normalized_fact)
+            actions_by_fact.setdefault(key, set()).add(instruction.action)
+        conflicts = {key for key, actions in actions_by_fact.items() if len(actions) > 1}
+
+        preferred_add_targets = {}
+        for instruction in instructions:
+            if instruction.action != "add":
+                continue
+            current = preferred_add_targets.get(instruction.normalized_fact)
+            if current is None or _TARGET_PRIORITY[instruction.target] > _TARGET_PRIORITY[current]:
+                preferred_add_targets[instruction.normalized_fact] = instruction.target
+
+        kept: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        for instruction in instructions:
+            key = (instruction.target, instruction.normalized_fact)
+            signature = (instruction.action, instruction.target, instruction.normalized_fact)
+            if key in conflicts or signature in seen:
+                rejected += 1
+                continue
+            if (
+                instruction.action == "add"
+                and preferred_add_targets[instruction.normalized_fact] != instruction.target
+            ):
+                rejected += 1
+                continue
+            if (
+                instruction.action == "remove"
+                and instruction.target in {"USER", "SOUL"}
+                and instruction.normalized_fact in invalid_memory_adds
+            ):
+                rejected += 1
+                continue
+            seen.add(signature)
+            kept.append(instruction.line)
+
+        if rejected:
+            logger.warning("Dream checklist validation discarded %d invalid or conflicting line(s)", rejected)
+        return "\n".join(kept) if kept else "(nothing)"
+
+    @staticmethod
+    def _parse_instruction(
+        line: str,
+        valid_source_ids: set[int],
+    ) -> _ChecklistInstruction | None:
+        match = _CHECKLIST_PATTERN.fullmatch(line)
+        if match is None:
+            return None
+
+        target, remove_suffix, payload = match.groups()
+        action = "remove" if remove_suffix else "add"
+        if action == "remove":
+            fact, separator, reason = payload.partition(" -- ")
+            if not separator or not fact.strip() or not reason.strip():
+                return None
+        else:
+            fact = payload
+
+        source_ids = {int(value) for value in _SOURCE_TAG_PATTERN.findall(fact)}
+        if action == "add" and target == "MEMORY":
+            if not source_ids or not source_ids.issubset(valid_source_ids):
+                return None
+        elif action == "add" and source_ids:
+            return None
+
+        normalized_fact = DreamManager._normalize_fact(fact)
+        if not normalized_fact:
+            return None
+        return _ChecklistInstruction(line, target, action, normalized_fact)
+
+    @staticmethod
+    def _normalize_fact(fact: str) -> str:
+        without_sources = _SOURCE_TAG_PATTERN.sub("", fact)
+        return re.sub(r"[\W_]+", "", without_sources.casefold())
 
     @staticmethod
     def _response_text(response: str | LLMResponse) -> str:

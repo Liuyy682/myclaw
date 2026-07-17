@@ -44,6 +44,50 @@ class ScriptedDreamProvider:
         return LLMResponse(content="done", final=True)
 
 
+class ScriptedMigrationProvider:
+    model = "dream"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, *, tools=None):
+        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools})
+        if tools is None:
+            return (
+                "[USER-REMOVE] Cron reports CPU and memory every 10 minutes"
+                " -- project-specific operational state\n"
+                "[SOUL-REMOVE] Assistant reports CPU and memory every 10 minutes"
+                " -- task capability, not persona"
+            )
+        if len(self.calls) == 2:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="remove_user",
+                        name="edit_file",
+                        arguments={
+                            "path": "USER.md",
+                            "old_text": "- Cron reports CPU and memory every 10 minutes\n",
+                            "new_text": "",
+                        },
+                    ),
+                    ToolCallRequest(
+                        id="remove_soul",
+                        name="edit_file",
+                        arguments={
+                            "path": "SOUL.md",
+                            "old_text": "- Assistant reports CPU and memory every 10 minutes\n",
+                            "new_text": "",
+                        },
+                    ),
+                ],
+            )
+        return LLMResponse(content="done", final=True)
+
+
 def _make_dream(tmp_path, provider, *, interval=15):
     manager = SessionManager(tmp_path)
     store = MemoryStore(tmp_path)
@@ -79,6 +123,114 @@ def test_phase1_input_includes_history_with_id_tags(tmp_path):
     # Cursor advanced past the consumed batch.
     cursor = json.loads((tmp_path / "memory" / ".dream_cursor").read_text(encoding="utf-8"))
     assert cursor["last_id"] == 0
+
+
+def test_phase1_prompt_defines_mutually_exclusive_routing(tmp_path):
+    provider = ScriptedDreamProvider("(nothing)")
+    dream, store = _make_dream(tmp_path, provider)
+    store.append_history("project and preference facts")
+
+    assert asyncio.run(dream.run_once()) is True
+
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    assert "the three files are mutually exclusive" in system_prompt
+    assert "scheduled jobs, operational state" in system_prompt
+    assert "Never put project-specific information in USER.md" in system_prompt
+    assert "Never infer SOUL facts from how one task was performed" in system_prompt
+    assert "One fact must have exactly one authoritative destination" in system_prompt
+    assert "Never remove a wrong-file fact unless" in system_prompt
+
+
+def test_checklist_validation_rejects_bad_format_and_sources(tmp_path, caplog):
+    dream, _ = _make_dream(tmp_path, ScriptedDreamProvider("(nothing)"))
+    checklist = "\n".join(
+        [
+            "[MEMORY] MyClaw uses Python. ⟨0⟩",
+            "[MEMORY] Missing source.",
+            "[MEMORY] Unknown source. ⟨99⟩",
+            "[UNKNOWN] Unsupported target.",
+            "[USER] Prefers concise answers.",
+            "[USER] Source tags belong in memory. ⟨0⟩",
+            "[USER-REMOVE] Missing reason.",
+        ]
+    )
+
+    validated = dream._validate_checklist(checklist, {0})
+
+    assert validated == (
+        "[MEMORY] MyClaw uses Python. ⟨0⟩\n"
+        "[USER] Prefers concise answers."
+    )
+    assert "discarded 5 invalid or conflicting line(s)" in caplog.text
+
+
+def test_checklist_validation_keeps_highest_priority_add_target(tmp_path):
+    dream, _ = _make_dream(tmp_path, ScriptedDreamProvider("(nothing)"))
+    checklist = "\n".join(
+        [
+            "[SOUL] MyClaw uses Python!",
+            "[USER] myclaw uses python",
+            "[MEMORY] MyClaw uses Python. ⟨0⟩",
+        ]
+    )
+
+    assert dream._validate_checklist(checklist, {0}) == "[MEMORY] MyClaw uses Python. ⟨0⟩"
+
+
+def test_checklist_validation_drops_same_file_add_remove_conflict(tmp_path):
+    dream, _ = _make_dream(tmp_path, ScriptedDreamProvider("(nothing)"))
+    checklist = "\n".join(
+        [
+            "[USER] Prefers concise answers.",
+            "[USER-REMOVE] Prefers concise answers -- superseded",
+        ]
+    )
+
+    assert dream._validate_checklist(checklist, {0}) == "(nothing)"
+
+
+def test_checklist_validation_preserves_orphan_when_memory_source_is_invalid(tmp_path):
+    dream, _ = _make_dream(tmp_path, ScriptedDreamProvider("(nothing)"))
+    checklist = "\n".join(
+        [
+            "[MEMORY] Cron runs every ten minutes. ⟨99⟩",
+            "[USER-REMOVE] Cron runs every ten minutes -- move to memory",
+        ]
+    )
+
+    assert dream._validate_checklist(checklist, {0}) == "(nothing)"
+
+
+def test_invalid_checklist_skips_phase2_and_advances_cursor(tmp_path):
+    provider = ScriptedDreamProvider("[MEMORY] Missing source id")
+    dream, store = _make_dream(tmp_path, provider)
+    store.append_history("project fact")
+
+    assert asyncio.run(dream.run_once()) is True
+
+    assert len(provider.calls) == 1
+    cursor = json.loads((tmp_path / "memory" / ".dream_cursor").read_text(encoding="utf-8"))
+    assert cursor["last_id"] == 0
+
+
+def test_migration_removes_wrong_file_copies_and_keeps_memory(tmp_path):
+    provider = ScriptedMigrationProvider()
+    dream, store = _make_dream(tmp_path, provider)
+    store.memory_dir.mkdir(parents=True)
+    store.user_path.write_text("- Cron reports CPU and memory every 10 minutes\n", encoding="utf-8")
+    store.soul_path.write_text("- Assistant reports CPU and memory every 10 minutes\n", encoding="utf-8")
+    canonical = "- Cron reports CPU and memory every 10 minutes ⟨0⟩\n"
+    store.memory_path.write_text(canonical, encoding="utf-8")
+    store.append_history("new durable fact triggers a full memory audit")
+
+    assert asyncio.run(dream.run_once()) is True
+
+    assert store.read_user() == ""
+    assert store.read_soul() == ""
+    assert store.read_memory() == canonical.strip()
+    phase2_checklist = provider.calls[1]["messages"][1]["content"]
+    assert "[USER-REMOVE]" in phase2_checklist
+    assert "[SOUL-REMOVE]" in phase2_checklist
 
 
 def test_phase2_applies_checklist_via_file_tools(tmp_path):

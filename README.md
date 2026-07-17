@@ -109,21 +109,34 @@ entries; if so it runs one cycle in the background:
 
 - **Phase 1 (analysis, no tools)** reads the new history entries plus the current
   memory files and emits a plain-text checklist of facts to add or prune.
-- **Phase 2 (file-editing agent)** applies that checklist with incremental edits,
-  using file tools scoped to the `memory/` directory.
+- **Validation** rejects malformed instructions, invalid source ids, same-file
+  add/remove conflicts, and duplicate additions assigned to multiple files.
+- **Phase 2 (file-editing agent)** applies only the validated checklist with
+  incremental edits, using file tools scoped to the `memory/` directory.
 
-Three markdown files under `memory/` hold the distilled memory:
+Three markdown files under `memory/` have mutually exclusive responsibilities:
 
-- `SOUL.md` — the assistant's persona and tone (injected ahead of the base prompt).
-- `USER.md` — user identity and preferences.
-- `MEMORY.md` — project knowledge and facts.
+- `SOUL.md` — only persona, tone, and lasting assistant behaviour explicitly
+  requested by the user. It must not contain user, project, or task facts.
+- `USER.md` — only stable, cross-project user identity, habits, and communication
+  or working preferences. It must not contain repository, technical, or task state.
+- `MEMORY.md` — the sole destination for project knowledge, repositories, tasks,
+  technical decisions, runtime configuration, scheduled jobs, and operational state.
+
+Each durable fact has one authoritative destination. Dream routes candidates in
+the order `MEMORY -> USER -> SOUL -> skip`; temporary status, one-off requests,
+execution output, and uncertain facts are skipped. On each run it also audits the
+current files: wrong-file project/task copies are removed only when an equivalent
+`MEMORY.md` copy already exists or can be added from a valid source in the current
+history batch. This lets later Dream runs clean old misclassification without
+silently discarding unsupported facts.
 
 `USER.md` and `MEMORY.md` are injected together as the long-term memory block.
 Each `MEMORY.md` fact carries a `⟨id⟩` tag pointing back to its source entry in
 `history.jsonl`; entries carry a stable id so these pointers survive even if the
 stream is later truncated. A cursor at `memory/.dream_cursor` tracks the last
-consumed entry and always advances past a processed batch, so a failed cycle
-never wedges the system on the same entries.
+consumed entry and always advances past a processed batch, so a failed or fully
+rejected cycle never wedges the system on the same entries.
 
 ### 版本追踪
 
