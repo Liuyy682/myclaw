@@ -790,6 +790,40 @@ textarea:focus-visible {
   margin: 8px 0 18px;
 }
 
+.message-row.tool_group {
+  justify-content: center;
+  margin: 8px 0 18px;
+}
+
+.message-row.tool_group .message-content { width: min(90%, 680px); }
+.tool-activity {
+  border: 1px solid #dce6df;
+  border-radius: 10px;
+  background: #f8faf8;
+  color: #516359;
+  font-size: 12px;
+}
+.tool-activity summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.tool-activity summary::-webkit-details-marker { display: none; }
+.tool-activity summary svg { color: var(--accent); }
+.tool-activity summary small { margin-left: auto; color: #7c8c82; }
+.tool-activity-list { padding: 0 12px 12px; border-top: 1px solid #e5ece7; }
+.tool-activity-item { display: flex; gap: 9px; padding-top: 11px; }
+.tool-activity-item > span { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: #65a879; }
+.tool-activity-item > span.running { background: #d7a63a; animation: pulse 1.3s infinite ease-in-out; }
+.tool-activity-item strong { display: block; color: #415249; font-size: 11px; }
+.tool-activity-item pre { margin: 4px 0 0; padding: 8px 10px; border-radius: 7px; overflow-x: auto; color: #dce7df; background: #203028; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@keyframes pulse { 50% { opacity: .4; } }
+
 .message-row.status .message-content,
 .message-row.error .message-content {
   max-width: 90%;

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Send,
   Sparkles,
+  Terminal,
   UserRound,
   X,
 } from 'lucide-react'
@@ -23,6 +24,7 @@ import type {
   GatewayEvent,
   MemoryPayload,
   SessionSummary,
+  ToolActivity,
   ViewMessage,
 } from './types'
 
@@ -64,6 +66,30 @@ function markdown(content: string) {
       {content}
     </ReactMarkdown>
   )
+}
+
+function toolActivity(event: GatewayEvent): ToolActivity {
+  const rawProgress = event.metadata?.progress
+  const progress = rawProgress && typeof rawProgress === 'object' ? rawProgress as Record<string, unknown> : {}
+  const name = typeof progress.tool_name === 'string' ? progress.tool_name : 'tool'
+  const rawArguments = progress.arguments
+  const arguments_ = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
+    ? rawArguments as Record<string, unknown>
+    : {}
+  const index = typeof progress.index === 'number' ? progress.index : 0
+  return {
+    id: typeof progress.tool_call_id === 'string' ? progress.tool_call_id : `${name}:${index}`,
+    name,
+    arguments: arguments_,
+    state: progress.event === 'tool_completed' ? 'completed' : 'running',
+    fallback: event.content,
+  }
+}
+
+function formatToolInvocation(tool: ToolActivity) {
+  if (tool.name === 'exec' && typeof tool.arguments.cmd === 'string') return tool.arguments.cmd
+  const argumentsText = Object.keys(tool.arguments).length > 0 ? ` ${JSON.stringify(tool.arguments, null, 2)}` : ''
+  return `${tool.name}${argumentsText}` || tool.fallback
 }
 
 function App() {
@@ -127,6 +153,22 @@ function App() {
         return exists
           ? current.map((item) => item.id === assistantId ? { ...item, content: event.content } : item)
           : [...current, { id: assistantId, role: 'assistant', content: event.content }]
+      })
+    } else if (event.type === 'tool_progress') {
+      const tool = toolActivity(event)
+      const groupId = `tools:${requestId}`
+      setMessages((current) => {
+        const groupIndex = current.findIndex((item) => item.id === groupId)
+        if (groupIndex < 0) return [...current, { id: groupId, role: 'tool_group', content: '', tools: [tool] }]
+        return current.map((item, index) => {
+          if (index !== groupIndex) return item
+          const tools = item.tools || []
+          const toolIndex = tools.findIndex((candidate) => candidate.id === tool.id)
+          const nextTools = toolIndex < 0
+            ? [...tools, tool]
+            : tools.map((candidate, candidateIndex) => candidateIndex === toolIndex ? { ...candidate, ...tool } : candidate)
+          return { ...item, tools: nextTools }
+        })
       })
     } else {
       const role = event.type === 'error' ? 'error' : 'status'
@@ -390,13 +432,15 @@ function App() {
 
           {messages.map((message) => (
             <article key={message.id} className={`message-row ${message.role}`}>
-              {message.role !== 'status' && message.role !== 'error' && (
+              {message.role !== 'status' && message.role !== 'error' && message.role !== 'tool_group' && (
                 <div className="message-avatar" aria-hidden="true">
                   {message.role === 'assistant' ? <Bot size={17} /> : <UserRound size={17} />}
                 </div>
               )}
               <div className="message-content">
-                {message.role === 'assistant' ? markdown(message.content) : message.content}
+                {message.role === 'assistant' ? markdown(message.content) : message.role === 'tool_group'
+                  ? <ToolActivityGroup tools={message.tools || []} />
+                  : message.content}
               </div>
             </article>
           ))}
@@ -487,6 +531,25 @@ function App() {
       )}
     </div>
   )
+}
+
+function ToolActivityGroup({ tools }: { tools: ToolActivity[] }) {
+  const running = tools.some((tool) => tool.state === 'running')
+  return <details className="tool-activity">
+    <summary>
+      <Terminal size={15} />
+      <span>{running ? '正在调用工具' : '已调用工具'} · {tools.length} 项</span>
+      <small>{running ? '运行中' : '已完成'}</small>
+    </summary>
+    <div className="tool-activity-list">
+      {tools.map((tool) => (
+        <div className="tool-activity-item" key={tool.id}>
+          <span className={tool.state} aria-label={tool.state === 'running' ? '运行中' : '已完成'} />
+          <div><strong>{tool.name}</strong><pre><code>{formatToolInvocation(tool)}</code></pre></div>
+        </div>
+      ))}
+    </div>
+  </details>
 }
 
 export default App

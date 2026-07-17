@@ -129,7 +129,7 @@ describe('MyClaw WebUI', () => {
     })
   })
 
-  test('shows progress and reconnecting state without mixing status into assistant text', async () => {
+  test('groups tool calls and reveals their exact commands without mixing status into assistant text', async () => {
     vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ sessions: [] })))
     render(<App />)
     await screen.findByText('今天想一起完成什么？')
@@ -137,11 +137,16 @@ describe('MyClaw WebUI', () => {
 
     act(() => {
       stream.onopen?.()
-      stream.emit({ type: 'tool_progress', id: 'req-3', chat_id: 'x', content: '正在运行工具', terminal: false })
+      stream.emit({ type: 'tool_progress', id: 'req-3', chat_id: 'x', content: 'Running tool exec (1/2)', terminal: false, metadata: { progress: { event: 'tool_started', tool_call_id: 'call-1', tool_name: 'exec', arguments: { cmd: 'rg -n TODO webui/src' }, index: 1 } } })
+      stream.emit({ type: 'tool_progress', id: 'req-3', chat_id: 'x', content: 'Finished tool exec (1/2)', terminal: false, metadata: { progress: { event: 'tool_completed', tool_call_id: 'call-1', tool_name: 'exec', arguments: { cmd: 'rg -n TODO webui/src' }, index: 1 } } })
+      stream.emit({ type: 'tool_progress', id: 'req-3', chat_id: 'x', content: 'Running tool exec (2/2)', terminal: false, metadata: { progress: { event: 'tool_started', tool_call_id: 'call-2', tool_name: 'exec', arguments: { cmd: 'npm test' }, index: 2 } } })
       stream.emit({ type: 'error', id: 'req-3', chat_id: 'x', content: '工具执行失败', terminal: true })
     })
 
-    expect(screen.getByText('正在运行工具')).toBeInTheDocument()
+    expect(screen.getByText('正在调用工具 · 2 项')).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByText('正在调用工具 · 2 项'))
+    expect(screen.getByText('rg -n TODO webui/src')).toBeInTheDocument()
+    expect(screen.getByText('npm test')).toBeInTheDocument()
     expect(screen.getByText('工具执行失败')).toBeInTheDocument()
     expect(screen.getAllByText('在线').length).toBeGreaterThan(0)
 

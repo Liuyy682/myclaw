@@ -183,6 +183,7 @@ class AgentRunner:
                 "iteration": iteration,
                 "tool_call_id": tool_call.id,
                 "tool_name": tool_call.name,
+                "arguments": dict(tool_call.arguments),
                 "index": index,
                 "total": total,
             }

@@ -36,10 +36,19 @@ export interface GatewayEvent {
   }
 }
 
+export interface ToolActivity {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  state: 'running' | 'completed'
+  fallback: string
+}
+
 export interface ViewMessage {
   id: string
-  role: MessageRole | 'status' | 'error'
+  role: MessageRole | 'status' | 'error' | 'tool_group'
   content: string
+  tools?: ToolActivity[]
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting'

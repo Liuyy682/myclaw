@@ -638,6 +638,7 @@ def test_dispatcher_forwards_tool_progress_as_non_terminal_outbound_messages(tmp
     assert started.event_type == "tool_progress"
     assert started.content == "Running tool add (1/1)"
     assert started.metadata["progress"]["event"] == "tool_started"
+    assert started.metadata["progress"]["arguments"] == {"a": 2, "b": 3}
     assert completed.terminal is False
     assert completed.event_type == "tool_progress"
     assert completed.content == "Finished tool add (1/1)"
