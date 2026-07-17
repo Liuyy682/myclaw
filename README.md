@@ -38,13 +38,12 @@ npm run dev
 
 `npm run build` 会将生产环境资源输出到 `myclaw/web/dist`。HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 
-The WebUI posts messages to `/api/messages`, receives streamed replies from
-`/api/events`, and lists saved conversations from `/api/sessions`. Assistant
-output streams as non-terminal `message_delta` SSE events followed by one
-terminal `message` event containing the complete response. Selecting a history
-entry loads its user/assistant messages and sends future turns with that entry's
-`session_key`, so gateway sessions and CLI sessions can both be resumed. To send
-the literal one-shot message `gateway`, use `python -m myclaw -- gateway`.
+WebUI 通过 `/api/messages` 发送消息，从 `/api/events` 接收流式回复，并通过
+`/api/sessions` 列出已保存的对话。助手输出会先以非终止的 `message_delta`
+SSE 事件持续推送，再以包含完整回复的终止 `message` 事件结束。选择历史会话后，
+系统会载入其中的用户/助手消息；后续轮次会携带该会话的 `session_key`，因此
+Gateway 会话和 CLI 会话都可以恢复。若要发送字面量的一次性消息 `gateway`，
+请使用 `python -m myclaw -- gateway`。
 
 交互式命令：
 
@@ -95,72 +94,56 @@ MYCLAW_IDLE_COMPACT_AFTER_MINUTES=15
 
 ## Dream：记忆整合
 
-Dream is a periodic, two-phase job that runs off the main conversation loop and
-distills the compacted history stream (`memory/history.jsonl`) into long-term
-memory files. Enable it with an interval in minutes:
+Dream 是一个在主对话循环之外运行的定时两阶段任务，用于将压缩后的历史流
+（`memory/history.jsonl`）整理为长期记忆文件。通过分钟级间隔启用：
 
 ```env
 MYCLAW_DREAM_INTERVAL_MINUTES=120
 ```
 
-The default is `0`, which disables Dream. When enabled, the dispatcher checks on
-each idle tick whether the interval has elapsed and there are unconsumed history
-entries; if so it runs one cycle in the background:
+默认值为 `0`，即禁用 Dream。启用后，调度器会在每次空闲检查时判断间隔是否已到、
+是否存在未消费的历史记录；满足条件时会在后台运行一次：
 
-- **Phase 1 (analysis, no tools)** reads the new history entries plus the current
-  memory files and emits a plain-text checklist of facts to add or prune.
-- **Validation** rejects malformed instructions, invalid source ids, same-file
-  add/remove conflicts, and duplicate additions assigned to multiple files.
-- **Phase 2 (file-editing agent)** applies only the validated checklist with
-  incremental edits, using file tools scoped to the `memory/` directory.
+- **阶段 1（分析，无工具）**：读取新增历史和当前记忆文件，生成要新增或清理事实的纯文本清单。
+- **校验**：拒绝格式错误的指令、无效来源 ID、同一文件内的增删冲突，以及被分配到多个文件的重复新增项。
+- **阶段 2（文件编辑 Agent）**：仅根据已校验的清单做增量修改，文件工具的作用域限制在 `memory/` 目录。
 
-Three markdown files under `memory/` have mutually exclusive responsibilities:
+`memory/` 下的三个 Markdown 文件职责互斥：
 
-- `SOUL.md` — only persona, tone, and lasting assistant behaviour explicitly
-  requested by the user. It must not contain user, project, or task facts.
-- `USER.md` — only stable, cross-project user identity, habits, and communication
-  or working preferences. It must not contain repository, technical, or task state.
-- `MEMORY.md` — the sole destination for project knowledge, repositories, tasks,
-  technical decisions, runtime configuration, scheduled jobs, and operational state.
+- `SOUL.md`：仅记录用户明确要求的助手人格、语气和长期行为准则；不得包含用户、项目或任务事实。
+- `USER.md`：仅记录跨项目稳定的用户身份、习惯、沟通或工作偏好；不得包含仓库、技术或任务状态。
+- `MEMORY.md`：项目知识、仓库、任务、技术决策、运行配置、定时任务和运行状态的唯一归属。
 
-Each durable fact has one authoritative destination. Dream routes candidates in
-the order `MEMORY -> USER -> SOUL -> skip`; temporary status, one-off requests,
-execution output, and uncertain facts are skipped. On each run it also audits the
-current files: wrong-file project/task copies are removed only when an equivalent
-`MEMORY.md` copy already exists or can be added from a valid source in the current
-history batch. This lets later Dream runs clean old misclassification without
-silently discarding unsupported facts.
+每个持久事实只有一个权威归属。Dream 按
+`MEMORY -> USER -> SOUL -> skip` 的顺序路由候选信息；临时状态、一次性请求、
+执行输出和不确定事实会被跳过。每次运行还会审计现有文件：只有当等价的
+`MEMORY.md` 副本已存在，或可由当前历史批次中的有效来源新增时，才会删除放错文件的
+项目/任务副本。这样后续 Dream 运行可以清理旧的误分类，同时不会静默丢弃缺乏依据的事实。
 
-`USER.md` and `MEMORY.md` are injected together as the long-term memory block.
-Each `MEMORY.md` fact carries a `⟨id⟩` tag pointing back to its source entry in
-`history.jsonl`; entries carry a stable id so these pointers survive even if the
-stream is later truncated. A cursor at `memory/.dream_cursor` tracks the last
-consumed entry and always advances past a processed batch, so a failed or fully
-rejected cycle never wedges the system on the same entries.
+`USER.md` 与 `MEMORY.md` 会一起注入长期记忆块。每条 `MEMORY.md` 事实都带有
+指向 `history.jsonl` 来源记录的 `⟨id⟩` 标签；记录拥有稳定 ID，因此即使历史流随后被截断，
+这些指针仍然有效。游标 `memory/.dream_cursor` 记录最近消费的位置，并始终在一个批次处理后推进，
+因此失败或全部被校验拒绝的周期都不会卡在同一批记录上。
 
 ### 版本追踪
 
-Each consolidation that changes the memory files is committed to a git
-repository in the `memory/` directory, giving the memory an auditable,
-revertible history. The repo is initialised on the first commit (with a local
-`myclaw-dream` identity, leaving your global git config untouched) and tracks
-only the memory files — `sessions/` is separate. Commit messages use a
-`dream: <time>, N change(s)` subject with the Phase 1 checklist as the body, so
-each commit records why the memory changed.
+每次改变记忆文件的整合都会提交到 `memory/` 目录中的 Git 仓库，提供可审计、可回退的历史。
+仓库会在首次提交时初始化（使用本地 `myclaw-dream` 身份，不影响你的全局 Git 配置），且只追踪
+记忆文件；`sessions/` 独立保存。提交标题采用
+`dream: <time>, N change(s)` 格式，正文保存阶段 1 的清单，因此每个提交都能说明记忆变更原因。
 
-Two interactive commands (CLI only):
+两个交互式命令（仅 CLI）：
 
-- `/dream` — run a consolidation cycle now instead of waiting for the timer.
-- `/dream-log [N]` — show the most recent consolidation commits (default 10).
+- `/dream`：立即运行一次整合，不等待定时器。
+- `/dream-log [N]`：查看最近的整合提交，默认显示 10 条。
 
-To revert, use git directly against the memory repo, for example
-`git -C ~/.myclaw/workspace/memory revert <hash>`.
+如需回退，请直接在记忆仓库中使用 Git，例如：
+`git -C ~/.myclaw/workspace/memory revert <hash>`。
 
 ## MCP 服务器
 
-The assistant can attach tools from external [MCP](https://modelcontextprotocol.io)
-servers. Drop an optional `mcp.json` in the workspace (next to the `sessions/`
-directory) listing stdio servers:
+助手可以挂载外部 [MCP](https://modelcontextprotocol.io) 服务器提供的工具。在工作区中
+（与 `sessions/` 目录同级）放置可选的 `mcp.json`，列出需要通过 stdio 启动的服务器：
 
 ```json
 {
@@ -173,33 +156,30 @@ directory) listing stdio servers:
 }
 ```
 
-On startup each server is launched, its tools are discovered, and they are
-registered under namespaced names like `mcp__filesystem__read_file` so they
-never collide with built-in tools. Servers are shut down cleanly when the
-process exits. A missing or invalid `mcp.json` is ignored.
+启动时，系统会启动每台服务器、发现其工具，并以
+`mcp__filesystem__read_file` 这类带命名空间的名称注册，因此不会与内置工具冲突。
+进程退出时会正常关闭服务器。缺失或无效的 `mcp.json` 会被忽略。
 
 ## 沙箱 Shell 执行
 
-The `exec` tool runs shell commands inside a [bubblewrap](https://github.com/containers/bubblewrap)
-(`bwrap`) sandbox when it is available:
+当 [bubblewrap](https://github.com/containers/bubblewrap)（`bwrap`）可用时，
+`exec` 工具会在其沙箱中运行 Shell 命令：
 
-- the host filesystem is mounted read-only, and only the workspace is writable;
-- PID, IPC, and UTS namespaces are isolated, and the child dies with the parent;
-- network is disabled unless the call passes `allow_network: true`.
+- 宿主文件系统以只读方式挂载，只有工作区可写；
+- PID、IPC 和 UTS 命名空间相互隔离，父进程退出时子进程也会结束；
+- 除非调用传入 `allow_network: true`，否则网络默认禁用。
 
-If `bwrap` is missing or user namespaces are unavailable (some containers and CI),
-`exec` falls back to running the command directly, keeping a command blacklist
-(`rm -rf`, `mkfs`, `dd of=`, fork bombs, ...) and workspace-relative `cwd`
-checks as a second line of defense. The result includes a `sandboxed` flag
-indicating which path was used.
+如果缺少 `bwrap` 或用户命名空间不可用（例如部分容器和 CI 环境），`exec` 会回退为直接运行命令，
+并保留命令黑名单（`rm -rf`、`mkfs`、`dd of=`、fork bomb 等）和相对工作区的 `cwd` 检查作为第二道防线。
+结果中包含 `sandboxed` 标志，用于说明实际采用的执行路径。
 
 ## 持久化任务图
 
-Tasks persist to `tasks/tasks.json` and survive across sessions. The store
-(`myclaw/tasks/store.py`, exposed through the `task_create` / `task_list` /
-`task_get` / `task_update` tools) enforces three things:
+任务会持久化到 `tasks/tasks.json`，可跨会话保留。存储层
+（`myclaw/tasks/store.py`，通过 `task_create` / `task_list` /
+`task_get` / `task_update` 工具暴露）保证以下三件事：
 
-- **One-way state machine.** Status flows in a single direction:
+- **单向状态机**：状态只能沿固定方向流转：
 
   ```text
   pending ──▶ in_progress ──▶ completed
@@ -209,18 +189,14 @@ Tasks persist to `tasks/tasks.json` and survive across sessions. The store
   cancelled    cancelled
   ```
 
-  `completed` and `cancelled` are terminal. Illegal jumps (for example
-  `completed → in_progress`, or skipping straight from `pending` to
-  `completed`) are rejected. Setting a status to itself is an idempotent no-op.
-  Legacy `open` / `done` values from older task files are mapped to
-  `pending` / `completed` on read.
+  `completed` 与 `cancelled` 是终态。非法跳转会被拒绝，例如
+  `completed → in_progress`，或从 `pending` 直接跳到 `completed`。
+  将状态设置为当前值是幂等空操作。读取旧版任务文件时，历史 `open` / `done`
+  值会映射为 `pending` / `completed`。
 
-- **Dependency links.** A task can declare `depends_on: [<id>, ...]`. Referenced
-  ids must exist, the dependency graph is kept acyclic (cycles are rejected via a
-  depth-first check), and a task cannot move to `in_progress` or `completed`
-  while any dependency is still unfinished.
+- **依赖关系**：任务可声明 `depends_on: [<id>, ...]`。引用的 ID 必须存在，依赖图通过
+  深度优先检查保证无环；只要任一依赖尚未完成，任务就不能进入 `in_progress` 或 `completed`。
 
-- **Multi-instance safety.** Every mutation takes an exclusive `flock` over
-  `tasks/tasks.json.lock` and runs a fresh load → mutate → atomic-write cycle, so
-  concurrent processes cannot lose each other's updates. The write itself uses the
-  same `tmp + os.replace` atomic pattern as the session and cron stores.
+- **多实例安全**：每次修改都会对 `tasks/tasks.json.lock` 获取独占 `flock`，并执行一次新的
+  “加载 → 修改 → 原子写入”流程，避免并发进程相互覆盖更新。写入本身采用与会话和 cron 存储相同的
+  `tmp + os.replace` 原子写入模式。
