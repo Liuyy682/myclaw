@@ -10,7 +10,7 @@ from myclaw.tools import ToolRegistry
 
 pytest.importorskip("mcp")
 
-_ECHO_SERVER = str(Path(__file__).parent / "mcp_echo_server.py")
+_ECHO_SERVER = str(Path(__file__).resolve().parents[1] / "fixtures" / "mcp_echo_server.py")
 
 
 def _echo_config() -> McpServerConfig:

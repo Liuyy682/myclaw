@@ -36,6 +36,14 @@ npm install
 npm run dev
 ```
 
+后端测试按领域存放在 `tests/` 的子目录中。完整测试和定向测试可分别运行：
+
+```bash
+python -m pytest
+python -m pytest tests/agent/test_dispatcher.py
+python -m pytest tests/gateway/test_gateway.py
+```
+
 `npm run build` 会将生产环境资源输出到 `myclaw/web/dist`。HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 
 WebUI 通过 `/api/messages` 发送消息，从 `/api/events` 接收流式回复，并通过
