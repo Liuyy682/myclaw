@@ -1,6 +1,6 @@
 import asyncio
 
-from myclaw import FunctionTool, ToolCallRequest, ToolRegistry
+from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry
 from myclaw.tools.base import ToolRuntimeContext, get_current_tool_context
 
 

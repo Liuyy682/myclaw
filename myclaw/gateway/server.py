@@ -4,15 +4,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import mimetypes
 import re
 import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
 
 from myclaw.agent import AgentDispatcher, DispatcherRuntime
 from myclaw.bus import InboundMessage, OutboundMessage
@@ -21,24 +18,17 @@ from myclaw.config import (
     DEFAULT_GATEWAY_HOST,
     DEFAULT_GATEWAY_PORT,
     GATEWAY_CHANNEL,
-    GATEWAY_MAX_BODY_BYTES,
 )
 from myclaw.session import Session
+from myclaw.gateway.http import (
+    HttpRequest as _HttpRequest,
+    json_body as _json_body,
+    read_http_request as _read_http_request,
+    send_json as _send_json,
+)
+from myclaw.gateway.static import send_web_asset as _send_web_asset
 
-
-_WEB_DIST_DIR = Path(__file__).resolve().parent / "web" / "dist"
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class _HttpRequest:
-    method: str
-    target: str
-    path: str
-    query: dict[str, list[str]]
-    headers: dict[str, str]
-    body: bytes
-
 
 @dataclass(slots=True)
 class _SseClient:
@@ -437,104 +427,6 @@ async def run_gateway(
         await server.serve_forever()
     finally:
         await server.stop()
-
-
-async def _read_http_request(reader: asyncio.StreamReader) -> _HttpRequest | None:
-    raw_head = await reader.readuntil(b"\r\n\r\n")
-    lines = raw_head.decode("iso-8859-1").split("\r\n")
-    try:
-        method, target, _version = lines[0].split()
-    except ValueError:
-        return None
-
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        if not line:
-            continue
-        if ":" not in line:
-            return None
-        name, value = line.split(":", 1)
-        headers[name.lower()] = value.strip()
-
-    length_text = headers.get("content-length", "0")
-    try:
-        content_length = int(length_text)
-    except ValueError:
-        return None
-    if content_length < 0 or content_length > GATEWAY_MAX_BODY_BYTES:
-        return None
-
-    parsed = urlsplit(target)
-    body = await reader.readexactly(content_length) if content_length else b""
-    return _HttpRequest(
-        method=method.upper(),
-        target=target,
-        path=parsed.path,
-        query=parse_qs(parsed.query),
-        headers=headers,
-        body=body,
-    )
-
-
-def _json_body(request: _HttpRequest) -> tuple[dict[str, Any], str | None]:
-    try:
-        payload = json.loads(request.body.decode("utf-8") if request.body else "{}")
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return {}, f"invalid JSON: {exc}"
-    if not isinstance(payload, dict):
-        return {}, "request body must be a JSON object"
-    return payload, None
-
-
-async def _send_web_asset(writer: asyncio.StreamWriter, request_path: str) -> bool:
-    decoded_path = unquote(request_path)
-    relative_path = "index.html" if decoded_path == "/" else decoded_path.removeprefix("/")
-    relative = PurePosixPath(relative_path)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        return False
-
-    candidate = _WEB_DIST_DIR.joinpath(*relative.parts).resolve()
-    if not candidate.is_relative_to(_WEB_DIST_DIR) or not candidate.is_file():
-        return False
-
-    content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
-    if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
-        content_type += "; charset=utf-8"
-    await _send_response(writer, 200, candidate.read_bytes(), content_type)
-    return True
-
-
-async def _send_json(writer: asyncio.StreamWriter, status: int, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    await _send_response(writer, status, body, "application/json; charset=utf-8")
-
-
-async def _send_response(
-    writer: asyncio.StreamWriter,
-    status: int,
-    body: bytes,
-    content_type: str,
-) -> None:
-    reason = {
-        200: "OK",
-        202: "Accepted",
-        400: "Bad Request",
-        404: "Not Found",
-        405: "Method Not Allowed",
-        503: "Service Unavailable",
-    }.get(status, "Error")
-    writer.write(
-        (
-            f"HTTP/1.1 {status} {reason}\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        ).encode("utf-8")
-    )
-    writer.write(body)
-    await writer.drain()
 
 
 def _outbound_event(outbound: OutboundMessage) -> dict[str, Any]:

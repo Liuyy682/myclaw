@@ -4,16 +4,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from myclaw import (
-    AgentConfig,
-    AgentLoop,
-    AgentRunResult,
-    FakeProvider,
-    FunctionTool,
-    ToolCallRequest,
-    ToolRegistry,
-    build_default_tool_registry,
-)
+from myclaw.agent import AgentConfig, AgentLoop, AgentRunResult
+from myclaw.providers import FakeProvider
+from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry, build_default_tool_registry
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
 from myclaw.tools.base import get_current_tool_context

@@ -26,7 +26,7 @@ from myclaw.config import (
     OPENAI_MODEL_ENV_VAR,
     load_env_file,
 )
-from myclaw.gateway import run_gateway
+from myclaw.gateway.server import run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.observability import ObservabilityRuntime, ObservedProvider
 from myclaw.session import SessionManager

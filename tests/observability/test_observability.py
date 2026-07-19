@@ -4,7 +4,8 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from myclaw import AgentConfig, FakeProvider
+from myclaw.agent import AgentConfig
+from myclaw.providers import FakeProvider
 from myclaw.agent.autocompact import AutoCompactManager
 from myclaw.agent.context import ContextBudgetManager, ContextBuilder
 from myclaw.agent.dream import DreamManager

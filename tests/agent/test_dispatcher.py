@@ -1,7 +1,9 @@
 import asyncio
 import contextlib
 
-from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider, FunctionTool, ToolCallRequest, ToolRegistry
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
+from myclaw.providers import FakeProvider
+from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry
 from myclaw.bus import InboundMessage, MessageBus
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager

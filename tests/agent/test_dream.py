@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from myclaw import AgentConfig
+from myclaw.agent import AgentConfig
 from myclaw.agent.dream import DreamManager
 from myclaw.memory import MemoryStore
 from myclaw.providers import LLMResponse

@@ -47,6 +47,31 @@ python -m pytest tests/gateway/test_gateway.py
 `npm run build` 会将生产环境资源输出到 `myclaw/web/dist`；该目录只包含构建产物，请勿手工修改。
 HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 
+## 代码目录与导入边界
+
+后端按运行领域组织：`agent/` 负责对话执行，`tools/` 负责内置工具，
+`providers/` 负责模型适配，`session/`、`memory/`、`tasks/` 和 `cron/`
+负责持久化能力。HTTP Gateway 进一步拆分为：
+
+```text
+myclaw/gateway/
+├── server.py   # 生命周期、路由、SSE
+├── http.py     # HTTP 请求解析和响应
+└── static.py   # WebUI 静态资源
+```
+
+根包不再聚合导出运行时类型，请从对应领域显式导入：
+
+```python
+from myclaw.agent import AgentLoop
+from myclaw.gateway.server import run_gateway
+from myclaw.providers import FakeProvider
+from myclaw.tools import ToolRegistry
+```
+
+WebUI 同样按 `app/`、`features/` 和 `shared/` 组织；业务组件应通过
+`shared/api/gateway.ts` 和 `shared/types/gateway.ts` 使用 Gateway 合约。
+
 WebUI 通过 `/api/messages` 发送消息，从 `/api/events` 接收流式回复，并通过
 `/api/sessions` 列出已保存的对话。助手输出会先以非终止的 `message_delta`
 SSE 事件持续推送，再以包含完整回复的终止 `message` 事件结束。选择历史会话后，

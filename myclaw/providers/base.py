@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from myclaw.agent.types import Message
+from myclaw.types import Message
 
 
 @dataclass(slots=True)

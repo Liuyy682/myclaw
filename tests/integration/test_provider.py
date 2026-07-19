@@ -5,7 +5,7 @@ import urllib.request
 
 import pytest
 
-from myclaw import LLMResponse, ToolCallRequest
+from myclaw.providers import LLMResponse, ToolCallRequest
 from myclaw.providers.openai_compat import OpenAICompatibleProvider
 
 

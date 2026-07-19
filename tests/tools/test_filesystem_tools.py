@@ -1,6 +1,6 @@
 import asyncio
 
-from myclaw import EditFileTool, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool, build_default_tool_registry
+from myclaw.tools import EditFileTool, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool, build_default_tool_registry
 
 
 def test_read_file_returns_line_numbered_text_and_supports_ranges(tmp_path):

@@ -1,6 +1,8 @@
 import asyncio
 
-from myclaw import AgentRunSpec, AgentRunner, FakeProvider, FunctionTool, LLMResponse, ToolCallRequest, ToolRegistry
+from myclaw.agent import AgentRunSpec, AgentRunner
+from myclaw.providers import FakeProvider, LLMResponse
+from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry
 
 
 def test_runner_returns_assistant_message_for_single_model_call():

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from myclaw import ToolCallRequest, ToolRegistry
+from myclaw.tools import ToolCallRequest, ToolRegistry
 from myclaw.memory import MemoryStore
 from myclaw.tools import MemoryWriteTool
 

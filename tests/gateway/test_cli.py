@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from myclaw import DispatcherRuntime
+from myclaw.agent import DispatcherRuntime
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file

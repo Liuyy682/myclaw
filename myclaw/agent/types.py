@@ -19,12 +19,12 @@ from myclaw.config import (
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     DEFAULT_SYSTEM_PROMPT,
 )
+from myclaw.types import Message
 
 if TYPE_CHECKING:
     from myclaw.tools import ToolRegistry
     from myclaw.tools.base import ToolRuntimeContext
 
-Message = dict[str, Any]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 StreamCallback = Callable[[str], Awaitable[None]]

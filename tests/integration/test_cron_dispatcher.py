@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 from datetime import datetime, timedelta
 
-from myclaw import AgentDispatcher
+from myclaw.agent import AgentDispatcher
 from myclaw.bus import MessageBus
 from myclaw.cron import CronStore
 

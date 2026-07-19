@@ -1,4 +1,4 @@
-from myclaw import AgentConfig, ContextBuilder
+from myclaw.agent import AgentConfig, ContextBuilder
 from myclaw.agent.context import TokenEstimator
 
 

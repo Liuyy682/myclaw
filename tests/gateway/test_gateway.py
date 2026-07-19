@@ -7,10 +7,11 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from myclaw import AgentConfig, AgentDispatcher, AgentLoop, FakeProvider
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
 from myclaw.bus import MessageBus, OutboundMessage
-import myclaw.gateway as gateway_module
-from myclaw.gateway import HttpGatewayServer
+from myclaw.gateway import static as gateway_static
+from myclaw.gateway.server import HttpGatewayServer
+from myclaw.providers import FakeProvider
 from myclaw.memory import MemoryStore
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, ObservedProvider
 from myclaw.session import Session, SessionManager
@@ -192,7 +193,7 @@ def test_gateway_root_serves_built_webui(tmp_path, monkeypatch):
         '<!doctype html><html><body><div id="root"></div><script src="/assets/app.js"></script></body></html>',
         encoding="utf-8",
     )
-    monkeypatch.setattr(gateway_module, "_WEB_DIST_DIR", dist)
+    monkeypatch.setattr(gateway_static, "_WEB_DIST_DIR", dist)
 
     async def scenario(server):
         status, headers, body = await _request(server.port, "GET", "/")
@@ -207,7 +208,7 @@ def test_gateway_root_serves_built_webui(tmp_path, monkeypatch):
 
 
 def test_repository_contains_production_webui_assets():
-    index = gateway_module._WEB_DIST_DIR / "index.html"
+    index = gateway_static._WEB_DIST_DIR / "index.html"
 
     assert index.is_file()
     html = index.read_text(encoding="utf-8")
@@ -221,7 +222,7 @@ def test_gateway_serves_static_assets_with_content_type_and_blocks_traversal(tmp
     assets.mkdir(parents=True)
     (assets / "app.js").write_text("console.log('myclaw')", encoding="utf-8")
     (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
-    monkeypatch.setattr(gateway_module, "_WEB_DIST_DIR", dist)
+    monkeypatch.setattr(gateway_static, "_WEB_DIST_DIR", dist)
 
     async def scenario(server):
         asset = await _request(server.port, "GET", "/assets/app.js")
