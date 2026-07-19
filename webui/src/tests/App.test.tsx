@@ -1,8 +1,8 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import App from '../App'
-import type { GatewayEvent } from '../types'
+import App from '../app/App'
+import type { GatewayEvent } from '../shared/types/gateway'
 
 class MockEventSource {
   static instances: MockEventSource[] = []

@@ -44,7 +44,8 @@ python -m pytest tests/agent/test_dispatcher.py
 python -m pytest tests/gateway/test_gateway.py
 ```
 
-`npm run build` 会将生产环境资源输出到 `myclaw/web/dist`。HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
+`npm run build` 会将生产环境资源输出到 `myclaw/web/dist`；该目录只包含构建产物，请勿手工修改。
+HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 
 WebUI 通过 `/api/messages` 发送消息，从 `/api/events` 接收流式回复，并通过
 `/api/sessions` 列出已保存的对话。助手输出会先以非终止的 `message_delta`

@@ -8,7 +8,7 @@ import type {
   TraceDetail,
   TraceStatus,
   TraceSummary,
-} from './types'
+} from '../types/gateway'
 
 async function readJson<T>(response: Response): Promise<T> {
   const payload = (await response.json()) as T & { error?: string }

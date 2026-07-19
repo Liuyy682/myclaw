@@ -16,7 +16,7 @@ import {
   getTrace,
   listObservabilityLogs,
   listTraces,
-} from './api'
+} from '../../shared/api/gateway'
 import type {
   ObservabilityLog,
   ObservabilitySummary,
@@ -24,7 +24,7 @@ import type {
   TraceSpan,
   TraceStatus,
   TraceSummary,
-} from './types'
+} from '../../shared/types/gateway'
 
 const WINDOWS = ['1h', '24h', '7d']
 
