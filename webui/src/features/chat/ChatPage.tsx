@@ -125,6 +125,7 @@ function ChatPage({ onShowMonitoring }: { onShowMonitoring: () => void }) {
         chatId: active.chatId,
         sessionKey: active.sessionKey,
         content,
+        requestId: crypto.randomUUID(),
       })
       if (!active.sessionKey) {
         setActive((current) => ({ ...current, sessionKey: `gateway:${current.chatId}` }))

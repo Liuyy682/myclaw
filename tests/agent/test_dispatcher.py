@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 
-from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherLimits
 from myclaw.providers import FakeProvider
 from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry
 from myclaw.bus import InboundMessage, MessageBus
@@ -408,6 +408,110 @@ def test_dispatcher_run_allows_different_sessions_to_run_concurrently():
 
     assert calls_while_blocked == [("first", "cli:one"), ("second", "cli:two")]
     assert contents == {"cli:one: first", "cli:two: second"}
+
+
+def test_dispatcher_submit_enforces_session_and_global_capacity():
+    bus = MessageBus(inbound_maxsize=3)
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(
+        bus,
+        loop,
+        limits=DispatcherLimits(
+            max_concurrent_requests=1,
+            max_pending_requests=3,
+            max_session_pending_requests=1,
+            queue_wait_timeout_seconds=1,
+        ),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        first = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="one"))
+        await loop.started.wait()
+        queued = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="two"))
+        session_full = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="three"))
+        assert (await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="two", content="four"))).accepted
+        globally_full = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="three", content="five"))
+        loop.release.set()
+        await bus.consume_outbound()
+        await bus.consume_outbound()
+        await bus.consume_outbound()
+        await _stop(task)
+        return first, queued, session_full, globally_full
+
+    first, queued, session_full, globally_full = asyncio.run(scenario())
+
+    assert first.accepted and queued.accepted
+    assert session_full.reason == "session_queue_full"
+    assert globally_full.reason == "service_overloaded"
+
+
+def test_dispatcher_queue_timeout_does_not_execute_and_releases_capacity():
+    bus = MessageBus(inbound_maxsize=3)
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(
+        bus,
+        loop,
+        limits=DispatcherLimits(
+            max_concurrent_requests=1,
+            max_pending_requests=3,
+            max_session_pending_requests=2,
+            queue_wait_timeout_seconds=0.02,
+        ),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        assert (await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="one"))).accepted
+        await loop.started.wait()
+        assert (await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="two", content="two"))).accepted
+        timeout = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        loop.release.set()
+        completed = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        follow_up = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="three", content="three"))
+        await bus.consume_outbound()
+        await _stop(task)
+        return timeout, completed, follow_up, list(loop.calls)
+
+    timeout, completed, follow_up, calls = asyncio.run(scenario())
+
+    assert timeout.event_type == "error"
+    assert "waiting in the queue" in timeout.content
+    assert completed.content == "done: one"
+    assert follow_up.accepted
+    assert calls == [("one", "cli:one"), ("three", "cli:three")]
+
+
+def test_dispatcher_control_command_bypasses_full_request_capacity():
+    bus = MessageBus(inbound_maxsize=1)
+    loop = BlockingLoop()
+    dispatcher = AgentDispatcher(
+        bus,
+        loop,
+        limits=DispatcherLimits(
+            max_concurrent_requests=1,
+            max_pending_requests=1,
+            max_session_pending_requests=1,
+            queue_wait_timeout_seconds=1,
+        ),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="one"))
+        await loop.started.wait()
+        status = await dispatcher.submit(InboundMessage(channel="cli", sender_id="u", chat_id="one", content="/status"))
+        response = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        loop.release.set()
+        await bus.consume_outbound()
+        await _stop(task)
+        return status, response
+
+    status, response = asyncio.run(scenario())
+
+    assert status.accepted
+    assert response.event_type == "control"
+    assert response.content == "Status: running."
 
 
 class BrokenLoop:

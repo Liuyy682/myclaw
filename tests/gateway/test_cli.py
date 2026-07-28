@@ -9,7 +9,7 @@ import pytest
 
 from myclaw.agent import DispatcherRuntime
 from myclaw.bus import MessageBus, OutboundMessage
-from myclaw.cli.commands import build_agent_loop, dispatch_text, run_interactive
+from myclaw.cli.commands import build_agent_loop, build_dispatcher, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file
 from myclaw.session import SessionManager
 
@@ -110,6 +110,30 @@ def test_build_agent_loop_reads_dream_interval_env(tmp_path, monkeypatch):
 
     assert loop.config.dream_interval_minutes == 120
     assert loop.dream.enabled is True
+
+
+def test_build_dispatcher_reads_backpressure_environment(monkeypatch):
+    monkeypatch.setenv("MYCLAW_MAX_CONCURRENT_REQUESTS", "2")
+    monkeypatch.setenv("MYCLAW_MAX_PENDING_REQUESTS", "9")
+    monkeypatch.setenv("MYCLAW_MAX_SESSION_PENDING_REQUESTS", "2")
+    monkeypatch.setenv("MYCLAW_QUEUE_WAIT_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setattr("myclaw.cli.commands.build_agent_loop", lambda: object())
+
+    dispatcher = build_dispatcher()
+
+    assert dispatcher.limits.max_concurrent_requests == 2
+    assert dispatcher.limits.max_pending_requests == 9
+    assert dispatcher.limits.max_session_pending_requests == 2
+    assert dispatcher.limits.queue_wait_timeout_seconds == 3.5
+    assert dispatcher.bus.inbound.maxsize == 9
+
+
+def test_build_dispatcher_rejects_invalid_backpressure_environment(monkeypatch):
+    monkeypatch.setenv("MYCLAW_MAX_PENDING_REQUESTS", "0")
+    monkeypatch.setattr("myclaw.cli.commands.build_agent_loop", lambda: object())
+
+    with pytest.raises(ValueError, match="max_pending_requests must be positive"):
+        build_dispatcher()
 
 
 def test_dream_command_parsing():

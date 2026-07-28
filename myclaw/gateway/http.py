@@ -65,25 +65,42 @@ def json_body(request: HttpRequest) -> tuple[dict[str, Any], str | None]:
     return payload, None
 
 
-async def send_json(writer: asyncio.StreamWriter, status: int, payload: dict[str, Any]) -> None:
+async def send_json(
+    writer: asyncio.StreamWriter,
+    status: int,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    await send_response(writer, status, body, "application/json; charset=utf-8")
+    await send_response(writer, status, body, "application/json; charset=utf-8", headers=headers)
 
 
-async def send_response(writer: asyncio.StreamWriter, status: int, body: bytes, content_type: str) -> None:
+async def send_response(
+    writer: asyncio.StreamWriter,
+    status: int,
+    body: bytes,
+    content_type: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> None:
     reason = {
         200: "OK",
         202: "Accepted",
         400: "Bad Request",
         404: "Not Found",
         405: "Method Not Allowed",
+        409: "Conflict",
+        429: "Too Many Requests",
         503: "Service Unavailable",
     }.get(status, "Error")
+    extra_headers = "".join(f"{name}: {value}\r\n" for name, value in (headers or {}).items())
     writer.write((
         f"HTTP/1.1 {status} {reason}\r\n"
         f"Content-Type: {content_type}\r\n"
         f"Content-Length: {len(body)}\r\n"
         "Cache-Control: no-store\r\n"
+        f"{extra_headers}"
         "Connection: close\r\n\r\n"
     ).encode("utf-8"))
     writer.write(body)

@@ -6,7 +6,9 @@ import json
 import logging
 import re
 import sys
+import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -37,6 +39,19 @@ class _SseClient:
     queue: asyncio.Queue[dict[str, Any] | None] = field(default_factory=asyncio.Queue)
 
 
+@dataclass(slots=True)
+class _AcceptedRequest:
+    session_key: str
+    content: str
+    response: dict[str, Any]
+    expires_at: float
+
+
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_REQUEST_DEDUP_TTL_SECONDS = 300.0
+_REQUEST_DEDUP_MAX_ENTRIES = 1024
+
+
 class HttpGatewayServer:
     """Local HTTP gateway for browser clients."""
 
@@ -54,6 +69,7 @@ class HttpGatewayServer:
         self._server: asyncio.Server | None = None
         self._fanout_task: asyncio.Task[None] | None = None
         self._clients: list[_SseClient] = []
+        self._accepted_requests: OrderedDict[str, _AcceptedRequest] = OrderedDict()
 
     @property
     def url(self) -> str:
@@ -200,27 +216,92 @@ class HttpGatewayServer:
             await _send_json(writer, 400, {"error": "session_key must be a string"})
             return
 
-        request_id = uuid.uuid4().hex
+        request_id = payload.get("request_id")
+        if request_id is None:
+            request_id = uuid.uuid4().hex
+        if not isinstance(request_id, str) or not _REQUEST_ID_PATTERN.fullmatch(request_id):
+            await _send_json(writer, 400, {"error": "request_id must contain 1-128 letters, numbers, dots, underscores, colons, or hyphens"})
+            return
+        resolved_session_key = session_key or f"{GATEWAY_CHANNEL}:{chat_id}"
+        try:
+            duplicate = self._duplicate_request(request_id, resolved_session_key, content)
+        except ValueError:
+            await _send_json(writer, 409, {"error": "request_id conflicts with a different request", "code": "request_id_conflict"})
+            return
+        if duplicate is not None:
+            await _send_json(writer, 202, {**duplicate, "duplicate": True})
+            return
         trace_id = uuid.uuid4().hex
-        await self.dispatcher.bus.publish_inbound(
-            InboundMessage(
-                channel=GATEWAY_CHANNEL,
-                sender_id="user",
-                chat_id=chat_id,
-                content=content,
-                metadata={"request_id": request_id, "trace_id": trace_id},
-                session_key_override=session_key,
-            )
+        message = InboundMessage(
+            channel=GATEWAY_CHANNEL,
+            sender_id="user",
+            chat_id=chat_id,
+            content=content,
+            metadata={"request_id": request_id, "trace_id": trace_id},
+            session_key_override=session_key,
         )
+        submit = getattr(self.dispatcher, "submit", None)
+        if callable(submit):
+            admission = await submit(message)
+            if not admission.accepted:
+                await self._send_admission_rejection(writer, admission.reason, admission.retry_after_seconds)
+                return
+        else:
+            await self.dispatcher.bus.publish_inbound(message)
+        response = {"id": request_id, "trace_id": trace_id, "chat_id": chat_id, "accepted": True}
+        self._remember_request(request_id, resolved_session_key, content, response)
         logger.info(
             "Gateway request accepted",
-            extra={"trace_id": trace_id, "request_id": request_id, "session_key": session_key or f"gateway:{chat_id}"},
+            extra={"trace_id": trace_id, "request_id": request_id, "session_key": resolved_session_key},
         )
+        await _send_json(writer, 202, response)
+
+    async def _send_admission_rejection(
+        self,
+        writer: asyncio.StreamWriter,
+        reason: str | None,
+        retry_after_seconds: int | None,
+    ) -> None:
+        is_session_full = reason == "session_queue_full"
+        retry_after = retry_after_seconds or (5 if is_session_full else 1)
         await _send_json(
             writer,
-            202,
-            {"id": request_id, "trace_id": trace_id, "chat_id": chat_id, "accepted": True},
+            429 if is_session_full else 503,
+            {
+                "error": "session queue is full" if is_session_full else "service is overloaded",
+                "code": "session_queue_full" if is_session_full else "service_overloaded",
+                "retry_after_seconds": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
         )
+
+    def _duplicate_request(self, request_id: str, session_key: str, content: str) -> dict[str, Any] | None:
+        self._purge_expired_requests()
+        existing = self._accepted_requests.get(request_id)
+        if existing is None:
+            return None
+        if existing.session_key != session_key or existing.content != content:
+            raise ValueError("request_id_conflict")
+        self._accepted_requests.move_to_end(request_id)
+        return dict(existing.response)
+
+    def _remember_request(self, request_id: str, session_key: str, content: str, response: dict[str, Any]) -> None:
+        self._purge_expired_requests()
+        self._accepted_requests[request_id] = _AcceptedRequest(
+            session_key=session_key,
+            content=content,
+            response=dict(response),
+            expires_at=time.monotonic() + _REQUEST_DEDUP_TTL_SECONDS,
+        )
+        self._accepted_requests.move_to_end(request_id)
+        while len(self._accepted_requests) > _REQUEST_DEDUP_MAX_ENTRIES:
+            self._accepted_requests.popitem(last=False)
+
+    def _purge_expired_requests(self) -> None:
+        now = time.monotonic()
+        for request_id, entry in list(self._accepted_requests.items()):
+            if entry.expires_at <= now:
+                del self._accepted_requests[request_id]
 
     async def _handle_sessions(self, writer: asyncio.StreamWriter, request: _HttpRequest) -> None:
         sessions = self.dispatcher.loop.session_manager.list_sessions()

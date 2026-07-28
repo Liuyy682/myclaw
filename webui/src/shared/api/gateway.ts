@@ -38,10 +38,12 @@ export async function sendMessage(input: {
   chatId: string
   content: string
   sessionKey: string | null
-}): Promise<{ id: string; trace_id: string; chat_id: string; accepted: boolean }> {
-  const body: { chat_id: string; content: string; session_key?: string } = {
+  requestId: string
+}): Promise<{ id: string; trace_id: string; chat_id: string; accepted: boolean; duplicate?: boolean }> {
+  const body: { chat_id: string; content: string; request_id: string; session_key?: string } = {
     chat_id: input.chatId,
     content: input.content,
+    request_id: input.requestId,
   }
   if (input.sessionKey) body.session_key = input.sessionKey
 

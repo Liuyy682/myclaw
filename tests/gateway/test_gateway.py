@@ -7,7 +7,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, SubmissionResult
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.gateway import static as gateway_static
 from myclaw.gateway.server import HttpGatewayServer
@@ -37,6 +37,20 @@ class RecordingDispatcher:
                     event_type="control" if msg.content.startswith("/") else "message",
                 )
             )
+
+
+class RejectingDispatcher:
+    def __init__(self, reason):
+        self.bus = MessageBus()
+        self.reason = reason
+        self.submit_calls = 0
+
+    async def run(self):
+        await asyncio.Event().wait()
+
+    async def submit(self, _message):
+        self.submit_calls += 1
+        return SubmissionResult(False, reason=self.reason, retry_after_seconds=7)
 
 
 class ProgressDispatcher:
@@ -307,6 +321,83 @@ def test_gateway_post_message_passes_session_key_override():
     ]
     assert event["chat_id"] == "cli:direct"
     assert event["content"] == "ack: resume"
+
+
+def test_gateway_request_id_deduplicates_and_rejects_conflicts():
+    dispatcher = RecordingDispatcher()
+
+    async def scenario(server):
+        payload = json.dumps({"chat_id": "alpha", "content": "hello", "request_id": "web:fixed-1"})
+        first = await _request(server.port, "POST", "/api/messages", payload)
+        second = await _request(server.port, "POST", "/api/messages", payload)
+        conflict = await _request(
+            server.port,
+            "POST",
+            "/api/messages",
+            json.dumps({"chat_id": "alpha", "content": "changed", "request_id": "web:fixed-1"}),
+        )
+        await asyncio.sleep(0)
+        return first, second, conflict
+
+    first, second, conflict = asyncio.run(_with_server(dispatcher, scenario))
+
+    assert first[0] == second[0] == 202
+    assert json.loads(second[2])["duplicate"] is True
+    assert conflict[0] == 409
+    assert json.loads(conflict[2])["code"] == "request_id_conflict"
+    assert len(dispatcher.received) == 1
+
+
+def test_gateway_request_id_cache_expires_and_evicts_oldest_entry():
+    server = HttpGatewayServer(RecordingDispatcher())
+    for index in range(1025):
+        server._remember_request(
+            f"request-{index}", "gateway:chat", "hello", {"id": f"request-{index}", "accepted": True},
+        )
+
+    assert len(server._accepted_requests) == 1024
+    assert "request-0" not in server._accepted_requests
+    latest = server._accepted_requests["request-1024"]
+    latest.expires_at = 0
+
+    assert server._duplicate_request("request-1024", "gateway:chat", "hello") is None
+
+
+def test_gateway_admission_rejection_uses_session_and_global_http_statuses():
+    async def scenario(server):
+        return await _request(
+            server.port,
+            "POST",
+            "/api/messages",
+            json.dumps({"content": "hello", "request_id": "retry-1"}),
+        )
+
+    session_full = asyncio.run(_with_server(RejectingDispatcher("session_queue_full"), scenario))
+    global_full = asyncio.run(_with_server(RejectingDispatcher("service_overloaded"), scenario))
+
+    assert session_full[0] == 429
+    assert json.loads(session_full[2]) == {
+        "error": "session queue is full", "code": "session_queue_full", "retry_after_seconds": 7,
+    }
+    assert session_full[1]["retry-after"] == "7"
+    assert global_full[0] == 503
+    assert json.loads(global_full[2])["code"] == "service_overloaded"
+    assert global_full[1]["retry-after"] == "7"
+
+
+def test_gateway_rejects_invalid_request_id():
+    async def scenario(server):
+        return await _request(
+            server.port,
+            "POST",
+            "/api/messages",
+            json.dumps({"content": "hello", "request_id": ""}),
+        )
+
+    status, _headers, body = asyncio.run(_with_server(RecordingDispatcher(), scenario))
+
+    assert status == 400
+    assert "request_id" in json.loads(body)["error"]
 
 
 def test_gateway_lists_saved_sessions_for_history_switching(tmp_path):

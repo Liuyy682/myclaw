@@ -1,6 +1,6 @@
 from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.context import ContextBuilder
-from myclaw.agent.dispatcher import AgentDispatcher
+from myclaw.agent.dispatcher import AgentDispatcher, DispatcherLimits, SubmissionResult
 from myclaw.agent.loop import AgentLoop
 from myclaw.agent.runtime import DispatcherRuntime
 from myclaw.agent.runner import AgentRunner
@@ -11,6 +11,7 @@ __all__ = [
     "AskCoordinator",
     "ContextBuilder",
     "AgentDispatcher",
+    "DispatcherLimits",
     "DispatcherRuntime",
     "AgentLoop",
     "AgentRunner",
@@ -20,4 +21,5 @@ __all__ = [
     "ProgressCallback",
     "RunResult",
     "StreamCallback",
+    "SubmissionResult",
 ]

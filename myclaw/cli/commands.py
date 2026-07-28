@@ -7,8 +7,9 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherRuntime
+from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, DispatcherLimits, DispatcherRuntime
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.config import (
     CLI_EXIT_COMMANDS,
@@ -16,6 +17,10 @@ from myclaw.config import (
     DEFAULT_CLI_SESSION_NAME,
     DEFAULT_GATEWAY_HOST,
     DEFAULT_GATEWAY_PORT,
+    DEFAULT_MAX_CONCURRENT_REQUESTS,
+    DEFAULT_MAX_PENDING_REQUESTS,
+    DEFAULT_MAX_SESSION_PENDING_REQUESTS,
+    DEFAULT_QUEUE_WAIT_TIMEOUT_SECONDS,
     DEFAULT_LLM_CIRCUIT_FAILURE_THRESHOLD,
     DEFAULT_LLM_CIRCUIT_OPEN_SECONDS,
     DEFAULT_LLM_MAX_RETRIES,
@@ -35,9 +40,13 @@ from myclaw.config import (
     LLM_RETRY_BASE_DELAY_SECONDS_ENV_VAR,
     LLM_RETRY_MAX_DELAY_SECONDS_ENV_VAR,
     LLM_TOTAL_TIMEOUT_SECONDS_ENV_VAR,
+    MAX_CONCURRENT_REQUESTS_ENV_VAR,
+    MAX_PENDING_REQUESTS_ENV_VAR,
+    MAX_SESSION_PENDING_REQUESTS_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_BASE_URL_ENV_VAR,
     OPENAI_MODEL_ENV_VAR,
+    QUEUE_WAIT_TIMEOUT_SECONDS_ENV_VAR,
     load_env_file,
 )
 from myclaw.gateway.server import run_gateway
@@ -112,6 +121,38 @@ def _env_float(name: str, *, default: float) -> float:
         raise ValueError(f"{name} must be a number") from exc
 
 
+def _dispatcher_limits() -> DispatcherLimits:
+    return DispatcherLimits(
+        max_concurrent_requests=_env_int(
+            MAX_CONCURRENT_REQUESTS_ENV_VAR, default=DEFAULT_MAX_CONCURRENT_REQUESTS,
+        ),
+        max_pending_requests=_env_int(
+            MAX_PENDING_REQUESTS_ENV_VAR, default=DEFAULT_MAX_PENDING_REQUESTS,
+        ),
+        max_session_pending_requests=_env_int(
+            MAX_SESSION_PENDING_REQUESTS_ENV_VAR, default=DEFAULT_MAX_SESSION_PENDING_REQUESTS,
+        ),
+        queue_wait_timeout_seconds=_env_float(
+            QUEUE_WAIT_TIMEOUT_SECONDS_ENV_VAR, default=DEFAULT_QUEUE_WAIT_TIMEOUT_SECONDS,
+        ),
+    )
+
+
+def _submission_error(reason: str | None) -> str:
+    if reason == "session_queue_full":
+        return "Error: This session already has too many queued requests."
+    return "Error: Service is busy. Please retry later."
+
+
+async def _submit_message(dispatcher: Any, message: InboundMessage) -> Any:
+    """Use Dispatcher admission when available, retaining lightweight test adapters."""
+    submit = getattr(dispatcher, "submit", None)
+    if callable(submit):
+        return await submit(message)
+    await dispatcher.bus.publish_inbound(message)
+    return None
+
+
 def _llm_resilience_config() -> LLMResilienceConfig:
     return LLMResilienceConfig(
         max_retries=_env_int(LLM_MAX_RETRIES_ENV_VAR, default=DEFAULT_LLM_MAX_RETRIES),
@@ -137,7 +178,8 @@ def _llm_resilience_config() -> LLMResilienceConfig:
 
 
 def build_dispatcher() -> AgentDispatcher:
-    return AgentDispatcher(MessageBus(), build_agent_loop())
+    limits = _dispatcher_limits()
+    return AgentDispatcher(MessageBus(inbound_maxsize=limits.max_pending_requests), build_agent_loop(), limits=limits)
 
 
 def _cli_session_key(session_name: str) -> str:
@@ -156,14 +198,15 @@ async def dispatch_text(
     *,
     session_name: str = DEFAULT_CLI_SESSION_NAME,
 ) -> OutboundMessage:
-    await runtime.dispatcher.bus.publish_inbound(
-        InboundMessage(
-            channel="cli",
-            sender_id="user",
-            chat_id=session_name,
-            content=text,
-        )
+    message = InboundMessage(
+        channel="cli",
+        sender_id="user",
+        chat_id=session_name,
+        content=text,
     )
+    admission = await _submit_message(runtime.dispatcher, message)
+    if admission is not None and not admission.accepted:
+        return OutboundMessage(channel="cli", chat_id=session_name, content=_submission_error(admission.reason))
     while True:
         outbound = await runtime.dispatcher.bus.consume_outbound()
         if outbound.terminal:
@@ -218,17 +261,18 @@ async def run_interactive(
                 if dream_log_limit is not None:
                     await _handle_dream_log(dispatcher, dream_log_limit)
                     continue
+                admission = await _submit_message(dispatcher, InboundMessage(
+                    channel="cli",
+                    sender_id="user",
+                    chat_id=session_name,
+                    content=text,
+                    metadata={"stream": True},
+                ))
+                if admission is not None and not admission.accepted:
+                    print(_submission_error(admission.reason))
+                    continue
                 pending["count"] += 1
                 pending["changed"].clear()
-                await dispatcher.bus.publish_inbound(
-                    InboundMessage(
-                        channel="cli",
-                        sender_id="user",
-                        chat_id=session_name,
-                        content=text,
-                        metadata={"stream": True},
-                    )
-                )
                 await asyncio.sleep(0)
                 await _wait_for_pending_output(pending, timeout=None)
         finally:

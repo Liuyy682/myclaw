@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +23,31 @@ logger = logging.getLogger(__name__)
 class _SessionDispatchState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     ref_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherLimits:
+    max_concurrent_requests: int = 4
+    max_pending_requests: int = 64
+    max_session_pending_requests: int = 3
+    queue_wait_timeout_seconds: float = 120.0
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent_requests < 1:
+            raise ValueError("max_concurrent_requests must be positive")
+        if self.max_pending_requests < 1:
+            raise ValueError("max_pending_requests must be positive")
+        if self.max_session_pending_requests < 1:
+            raise ValueError("max_session_pending_requests must be positive")
+        if not math.isfinite(self.queue_wait_timeout_seconds) or self.queue_wait_timeout_seconds <= 0:
+            raise ValueError("queue_wait_timeout_seconds must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionResult:
+    accepted: bool
+    reason: str | None = None
+    retry_after_seconds: int | None = None
 
 
 class _NoopObservability:
@@ -42,14 +69,49 @@ class AgentDispatcher:
     _CONTROL_COMMANDS = {"/clear", "/status", "/stop"}
     _AUTO_COMPACT_IDLE_TICK_SECONDS = 1.0
 
-    def __init__(self, bus: MessageBus, loop: AgentLoop) -> None:
+    def __init__(self, bus: MessageBus, loop: AgentLoop, *, limits: DispatcherLimits | None = None) -> None:
         self.bus = bus
         self.loop = loop
+        self.limits = limits or DispatcherLimits()
         self.observability = getattr(loop, "observability", _NoopObservability())
         self.ask = AskCoordinator(bus)
         self._session_states: dict[str, _SessionDispatchState] = {}
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._active_session_tasks: dict[str, asyncio.Task[None]] = {}
+        self._execution_slots = asyncio.Semaphore(self.limits.max_concurrent_requests)
+        self._pending_agent_requests = 0
+
+    async def submit(self, msg: InboundMessage) -> SubmissionResult:
+        """Admit a user message without allowing unbounded waiting tasks."""
+        command = self._control_command(msg.content)
+        if command is not None:
+            self._schedule_task(self._process_control_message(msg, command))
+            return SubmissionResult(True)
+        if self.ask.submit_answer(msg.session_key, msg.content):
+            return SubmissionResult(True)
+        result = self._reserve_agent_request(msg)
+        if not result.accepted:
+            logger.warning(
+                "Agent request rejected",
+                extra={
+                    "reason": result.reason,
+                    "pending_requests": self._pending_agent_requests,
+                    "session_pending_requests": self._session_pending_count(msg.session_key),
+                },
+            )
+            return result
+        if self.bus.try_publish_inbound(msg):
+            logger.info(
+                "Agent request accepted",
+                extra={
+                    "pending_requests": self._pending_agent_requests,
+                    "session_pending_requests": self._session_pending_count(msg.session_key),
+                },
+            )
+            return result
+        self._release_reserved_request(msg.session_key, msg._dispatch_state)
+        msg._dispatch_state = None
+        return SubmissionResult(False, reason="service_overloaded", retry_after_seconds=1)
 
     async def run(self) -> None:
         try:
@@ -64,9 +126,7 @@ class AgentDispatcher:
                     self._check_cron()
                     self._check_dream()
                     continue
-                task = asyncio.create_task(self._process_message(msg))
-                self._active_tasks.add(task)
-                task.add_done_callback(self._active_tasks.discard)
+                self._schedule_task(self._process_message(msg))
         except asyncio.CancelledError:
             await self._cancel_active_tasks()
             raise
@@ -83,7 +143,14 @@ class AgentDispatcher:
         if self.ask.submit_answer(msg.session_key, msg.content):
             return
 
-        await self._process_agent_message(msg)
+        state = getattr(msg, "_dispatch_state", None)
+        if state is None:
+            admission = self._reserve_agent_request(msg)
+            if not admission.accepted:
+                await self._publish_rejection(msg, admission.reason or "service_overloaded")
+                return
+            state = msg._dispatch_state
+        await self._process_agent_message(msg, state)
 
     def _check_auto_compact(self) -> None:
         auto_compact = getattr(self.loop, "auto_compact", None)
@@ -148,17 +215,19 @@ class AgentDispatcher:
                 )
 
     def _schedule_background(self, coro) -> None:
+        self._schedule_task(coro)
+
+    def _schedule_task(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _process_agent_message(self, msg: InboundMessage) -> None:
+    async def _process_agent_message(self, msg: InboundMessage, state: _SessionDispatchState) -> None:
         metadata = dict(msg.metadata)
         trace_id = str(metadata.get("trace_id") or "")
         if not trace_id and self.observability.config.enabled:
             trace_id = uuid.uuid4().hex
             metadata["trace_id"] = trace_id
-        state = self._retain_session_state(msg.session_key)
         try:
             with self.observability.trace(
                 "agent.request", "conversation",
@@ -171,7 +240,24 @@ class AgentDispatcher:
                 trace_id=trace_id or None,
             ) as trace:
                 with self.observability.span("dispatcher.process", "agent"):
-                    async with state.lock:
+                    acquired_session = False
+                    acquired_slot = False
+                    try:
+                        deadline = getattr(msg, "_dispatch_deadline", time.monotonic() + self.limits.queue_wait_timeout_seconds)
+                        async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+                            await state.lock.acquire()
+                            acquired_session = True
+                            await self._execution_slots.acquire()
+                            acquired_slot = True
+                    except TimeoutError:
+                        if acquired_slot:
+                            self._execution_slots.release()
+                        if acquired_session:
+                            state.lock.release()
+                        trace.set_error("Request timed out while waiting in the queue.", error_type="QueueTimeout")
+                        await self._publish_rejection(msg, "queue_timeout")
+                        return
+                    try:
                         self.observability.record_completed_span(
                             "queue.wait", "queue", started_at=msg.timestamp, ended_at=datetime.now(UTC),
                             attributes={"inbound_queue_size": self.bus.inbound_size},
@@ -217,8 +303,13 @@ class AgentDispatcher:
                                 )
                             )
                         logger.info("Agent request completed")
+                    finally:
+                        if acquired_slot:
+                            self._execution_slots.release()
+                        if acquired_session:
+                            state.lock.release()
         finally:
-            self._release_session_state(msg.session_key, state)
+            self._release_reserved_request(msg.session_key, state)
 
     @classmethod
     def _control_command(cls, content: str) -> str | None:
@@ -335,16 +426,57 @@ class AgentDispatcher:
         state.ref_count += 1
         return state
 
+    def _reserve_agent_request(self, msg: InboundMessage) -> SubmissionResult:
+        if self._pending_agent_requests >= self.limits.max_pending_requests:
+            return SubmissionResult(False, reason="service_overloaded", retry_after_seconds=1)
+        state = self._session_states.get(msg.session_key)
+        if state is not None and state.ref_count >= 1 + self.limits.max_session_pending_requests:
+            return SubmissionResult(False, reason="session_queue_full", retry_after_seconds=5)
+        state = self._retain_session_state(msg.session_key)
+        self._pending_agent_requests += 1
+        msg._dispatch_state = state
+        msg._dispatch_deadline = time.monotonic() + self.limits.queue_wait_timeout_seconds
+        return SubmissionResult(True)
+
     def _model(self) -> str:
         config = getattr(self.loop, "config", None)
         configured = getattr(config, "model", "")
         provider = getattr(self.loop, "provider", None)
         return configured or getattr(provider, "model", "")
 
-    def _release_session_state(self, session_key: str, state: _SessionDispatchState) -> None:
+    def _release_reserved_request(self, session_key: str, state: _SessionDispatchState | None) -> None:
+        if state is None:
+            return
+        self._pending_agent_requests -= 1
         state.ref_count -= 1
         if state.ref_count == 0 and self._session_states.get(session_key) is state:
             del self._session_states[session_key]
+
+    def _session_pending_count(self, session_key: str) -> int:
+        state = self._session_states.get(session_key)
+        return state.ref_count if state is not None else 0
+
+    async def _publish_rejection(self, msg: InboundMessage, reason: str) -> None:
+        content = {
+            "service_overloaded": "Error: Service is busy. Please retry later.",
+            "session_queue_full": "Error: This session already has too many queued requests.",
+            "queue_timeout": "Error: Request timed out while waiting in the queue.",
+        }[reason]
+        logger.warning(
+            "dispatcher_rejected reason=%s pending=%s session_key=%s",
+            reason,
+            self._pending_agent_requests,
+            msg.session_key,
+        )
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=content,
+                metadata=dict(msg.metadata),
+                event_type="error",
+            )
+        )
 
     async def _cancel_active_tasks(self) -> None:
         tasks = list(self._active_tasks)
