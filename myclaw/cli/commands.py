@@ -16,11 +16,25 @@ from myclaw.config import (
     DEFAULT_CLI_SESSION_NAME,
     DEFAULT_GATEWAY_HOST,
     DEFAULT_GATEWAY_PORT,
+    DEFAULT_LLM_CIRCUIT_FAILURE_THRESHOLD,
+    DEFAULT_LLM_CIRCUIT_OPEN_SECONDS,
+    DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_RETRY_BASE_DELAY_SECONDS,
+    DEFAULT_LLM_RETRY_MAX_DELAY_SECONDS,
+    DEFAULT_LLM_TOTAL_TIMEOUT_SECONDS,
     DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_TIMEOUT_SECONDS,
     DEFAULT_OPENAI_MODEL,
     DREAM_INTERVAL_MINUTES_ENV_VAR,
     FAKE_PROVIDER_MODEL,
     IDLE_COMPACT_AFTER_MINUTES_ENV_VAR,
+    LLM_CIRCUIT_FAILURE_THRESHOLD_ENV_VAR,
+    LLM_CIRCUIT_OPEN_SECONDS_ENV_VAR,
+    LLM_MAX_RETRIES_ENV_VAR,
+    LLM_REQUEST_TIMEOUT_SECONDS_ENV_VAR,
+    LLM_RETRY_BASE_DELAY_SECONDS_ENV_VAR,
+    LLM_RETRY_MAX_DELAY_SECONDS_ENV_VAR,
+    LLM_TOTAL_TIMEOUT_SECONDS_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_BASE_URL_ENV_VAR,
     OPENAI_MODEL_ENV_VAR,
@@ -28,6 +42,7 @@ from myclaw.config import (
 )
 from myclaw.gateway.server import run_gateway
 from myclaw.providers import FakeProvider, OpenAICompatibleProvider
+from myclaw.providers.openai_compat import LLMResilienceConfig
 from myclaw.observability import ObservabilityRuntime, ObservedProvider
 from myclaw.session import SessionManager
 from myclaw.tools import build_default_tool_registry
@@ -49,6 +64,7 @@ def build_agent_loop() -> AgentLoop:
             api_key=api_key,
             base_url=os.environ.get(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL),
             model=model,
+            resilience=_llm_resilience_config(),
         ), observability)
         return AgentLoop(
             provider,
@@ -84,6 +100,40 @@ def _env_int(name: str, *, default: int) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _env_float(name: str, *, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
+def _llm_resilience_config() -> LLMResilienceConfig:
+    return LLMResilienceConfig(
+        max_retries=_env_int(LLM_MAX_RETRIES_ENV_VAR, default=DEFAULT_LLM_MAX_RETRIES),
+        request_timeout_seconds=_env_float(
+            LLM_REQUEST_TIMEOUT_SECONDS_ENV_VAR, default=DEFAULT_OPENAI_TIMEOUT_SECONDS,
+        ),
+        total_timeout_seconds=_env_float(
+            LLM_TOTAL_TIMEOUT_SECONDS_ENV_VAR, default=DEFAULT_LLM_TOTAL_TIMEOUT_SECONDS,
+        ),
+        base_delay_seconds=_env_float(
+            LLM_RETRY_BASE_DELAY_SECONDS_ENV_VAR, default=DEFAULT_LLM_RETRY_BASE_DELAY_SECONDS,
+        ),
+        max_delay_seconds=_env_float(
+            LLM_RETRY_MAX_DELAY_SECONDS_ENV_VAR, default=DEFAULT_LLM_RETRY_MAX_DELAY_SECONDS,
+        ),
+        circuit_failure_threshold=_env_int(
+            LLM_CIRCUIT_FAILURE_THRESHOLD_ENV_VAR, default=DEFAULT_LLM_CIRCUIT_FAILURE_THRESHOLD,
+        ),
+        circuit_open_seconds=_env_float(
+            LLM_CIRCUIT_OPEN_SECONDS_ENV_VAR, default=DEFAULT_LLM_CIRCUIT_OPEN_SECONDS,
+        ),
+    )
 
 
 def build_dispatcher() -> AgentDispatcher:

@@ -1,7 +1,7 @@
 import asyncio
 
 from myclaw.agent import AgentRunSpec, AgentRunner
-from myclaw.providers import FakeProvider, LLMResponse
+from myclaw.providers import FakeProvider, LLMResponse, LLMServiceUnavailableError
 from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry
 
 
@@ -467,6 +467,23 @@ def test_runner_returns_error_state_when_provider_fails():
     assert result.messages == [
         {"role": "assistant", "content": "Error: provider unavailable"},
     ]
+
+
+def test_runner_returns_stable_message_for_temporary_llm_outage():
+    class UnavailableProvider:
+        model = "broken"
+
+        async def complete(self, messages, *, tools=None):
+            raise LLMServiceUnavailableError()
+
+    result = asyncio.run(AgentRunner(UnavailableProvider()).run(AgentRunSpec(
+        messages=[{"role": "user", "content": "hello"}],
+        model="broken",
+        max_iterations=1,
+    )))
+
+    assert result.content == "Error: LLM service is temporarily unavailable. Please retry later."
+    assert result.error == "LLM service is temporarily unavailable. Please retry later."
 
 
 def test_runner_does_not_persist_history_between_calls():

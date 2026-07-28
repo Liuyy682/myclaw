@@ -1,12 +1,15 @@
 import asyncio
 import json
+import time
 import urllib.error
 import urllib.request
+from email.utils import format_datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from myclaw.providers import LLMResponse, ToolCallRequest
-from myclaw.providers.openai_compat import OpenAICompatibleProvider
+from myclaw.providers import LLMResilienceConfig, LLMResponse, LLMServiceUnavailableError, ToolCallRequest
+from myclaw.providers.openai_compat import OpenAICompatibleProvider, _retry_after_seconds
 
 
 class FakeHTTPResponse:
@@ -180,6 +183,129 @@ def test_openai_compatible_provider_raises_readable_http_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="LLM request failed: HTTP 401 Unauthorized"):
         asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+
+
+def test_openai_compatible_provider_retries_retryable_http_errors(monkeypatch):
+    attempts = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 4:
+            raise urllib.error.HTTPError(request.full_url, 503, "Unavailable", None, None)
+        return FakeHTTPResponse({"choices": [{"message": {"content": "recovered"}}]})
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("myclaw.providers.openai_compat.asyncio.sleep", no_sleep)
+    provider = OpenAICompatibleProvider(
+        api_key="secret",
+        model="demo-model",
+        resilience=LLMResilienceConfig(max_retries=3),
+    )
+
+    assert asyncio.run(provider.complete([{"role": "user", "content": "hello"}])) == "recovered"
+    assert attempts == 4
+
+
+def test_openai_compatible_provider_returns_stable_error_after_retry_exhaustion(monkeypatch):
+    attempts = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.URLError("temporary DNS failure")
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("myclaw.providers.openai_compat.asyncio.sleep", no_sleep)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+
+    with pytest.raises(LLMServiceUnavailableError, match="temporarily unavailable"):
+        asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+    assert attempts == 4
+
+
+def test_retry_after_parser_supports_seconds_dates_and_invalid_values():
+    assert _retry_after_seconds("2.5") == 2.5
+    future = format_datetime(datetime.now(UTC) + timedelta(seconds=5), usegmt=True)
+    parsed = _retry_after_seconds(future)
+    assert parsed is not None and 0 <= parsed <= 5
+    assert _retry_after_seconds("not-a-date") is None
+
+
+def test_openai_compatible_provider_opens_and_recovers_circuit(monkeypatch):
+    attempts = 0
+
+    def unavailable(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    provider = OpenAICompatibleProvider(
+        api_key="secret",
+        model="demo-model",
+        resilience=LLMResilienceConfig(max_retries=0, circuit_failure_threshold=5, circuit_open_seconds=30),
+    )
+    for _ in range(5):
+        with pytest.raises(LLMServiceUnavailableError):
+            asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+    assert attempts == 5
+
+    with pytest.raises(LLMServiceUnavailableError):
+        asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+    assert attempts == 5
+
+    provider._open_until = time.monotonic() - 1
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeHTTPResponse({"choices": [{"message": {"content": "ok"}}]}),
+    )
+    assert asyncio.run(provider.complete([{"role": "user", "content": "hello"}])) == "ok"
+    assert provider._circuit_state == "closed"
+
+
+def test_streaming_retries_only_before_first_delta(monkeypatch):
+    attempts = 0
+
+    def fail_before_delta(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.URLError("down")
+        return FakeHTTPStreamResponse([_stream_line({"choices": [{"delta": {"content": "ok"}}]}), "data: [DONE]\n\n"])
+
+    async def no_sleep(_delay):
+        return None
+
+    deltas = []
+
+    async def record_delta(delta):
+        deltas.append(delta)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_before_delta)
+    monkeypatch.setattr("myclaw.providers.openai_compat.asyncio.sleep", no_sleep)
+    provider = OpenAICompatibleProvider(api_key="secret", model="demo-model")
+    assert asyncio.run(provider.stream_complete([{"role": "user", "content": "hello"}], delta_callback=record_delta)) == "ok"
+    assert attempts == 2
+    assert deltas == ["ok"]
+
+    attempts = 0
+
+    class BrokenAfterDelta(FakeHTTPStreamResponse):
+        def __iter__(self):
+            yield _stream_line({"choices": [{"delta": {"content": "partial"}}]}).encode("utf-8")
+            raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: BrokenAfterDelta([]))
+    with pytest.raises(LLMServiceUnavailableError):
+        asyncio.run(provider.stream_complete([{"role": "user", "content": "hello"}], delta_callback=record_delta))
 
 
 def test_openai_compatible_provider_streams_text_deltas(monkeypatch):

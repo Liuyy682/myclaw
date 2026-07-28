@@ -1,5 +1,5 @@
-from myclaw.providers.base import LLMProvider, LLMResponse, LLMUsage, Message, ToolCallRequest
+from myclaw.providers.base import LLMProvider, LLMResponse, LLMServiceUnavailableError, LLMUsage, Message, ToolCallRequest
 from myclaw.providers.fake import FakeProvider
-from myclaw.providers.openai_compat import OpenAICompatibleProvider
+from myclaw.providers.openai_compat import LLMResilienceConfig, OpenAICompatibleProvider
 
-__all__ = ["FakeProvider", "LLMProvider", "LLMResponse", "LLMUsage", "Message", "OpenAICompatibleProvider", "ToolCallRequest"]
+__all__ = ["FakeProvider", "LLMProvider", "LLMResponse", "LLMResilienceConfig", "LLMServiceUnavailableError", "LLMUsage", "Message", "OpenAICompatibleProvider", "ToolCallRequest"]

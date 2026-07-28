@@ -137,6 +137,42 @@ def test_build_agent_loop_rejects_invalid_idle_compact_env(tmp_path, monkeypatch
         build_agent_loop()
 
 
+def test_build_agent_loop_reads_llm_resilience_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_LLM_MAX_RETRIES", "1")
+    monkeypatch.setenv("MYCLAW_LLM_TOTAL_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("MYCLAW_LLM_CIRCUIT_FAILURE_THRESHOLD", "2")
+
+    loop = build_agent_loop()
+
+    resilience = loop.provider._provider.resilience
+    assert resilience.max_retries == 1
+    assert resilience.total_timeout_seconds == 12.5
+    assert resilience.circuit_failure_threshold == 2
+
+
+def test_build_agent_loop_rejects_invalid_llm_resilience_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_LLM_MAX_RETRIES", "-1")
+
+    with pytest.raises(ValueError, match="max_retries"):
+        build_agent_loop()
+
+
+def test_build_agent_loop_rejects_non_finite_llm_resilience_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_LLM_TOTAL_TIMEOUT_SECONDS", "nan")
+
+    with pytest.raises(ValueError, match="total_timeout_seconds"):
+        build_agent_loop()
+
+
 class ProgressThenFinalDispatcher:
     def __init__(self):
         self.bus = MessageBus()

@@ -7,6 +7,15 @@ from typing import Any, Protocol
 from myclaw.types import Message
 
 
+class LLMServiceUnavailableError(RuntimeError):
+    """A retryable provider outage exposed to the agent as a stable error."""
+
+    message = "LLM service is temporarily unavailable. Please retry later."
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
+
+
 @dataclass(slots=True)
 class ToolCallRequest:
     id: str
