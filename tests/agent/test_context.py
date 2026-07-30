@@ -167,6 +167,29 @@ def test_context_builder_layers_soul_user_and_memory():
     assert messages[1] == {"role": "user", "content": "next"}
 
 
+def test_context_builder_places_skill_catalog_before_long_term_memory():
+    builder = ContextBuilder()
+
+    messages = builder.build_messages(
+        AgentConfig(system_prompt="Base system."),
+        [],
+        "next",
+        memory_text="- Project uses Python.",
+        soul_text="Persona first.",
+        skills_text="Available skills:\n- review: Review code",
+    )
+
+    assert messages[0] == {
+        "role": "system",
+        "content": (
+            "Persona first.\n\n"
+            "Base system.\n\n"
+            "Available skills:\n- review: Review code\n\n"
+            "Long-term memory:\n- Project uses Python."
+        ),
+    }
+
+
 def test_context_builder_omits_empty_memory_layers():
     builder = ContextBuilder()
 

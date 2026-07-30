@@ -14,6 +14,7 @@ from myclaw.memory import MemoryStore
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, SpanHandle, current_trace_context
 from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager, TranscriptStore
+from myclaw.skills import SkillCatalog
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import AskCallback, ToolRuntimeContext
 
@@ -34,6 +35,7 @@ class AgentLoop:
         *,
         session_manager: SessionManager,
         tool_registry: ToolRegistry | None = None,
+        skill_catalog: SkillCatalog | None = None,
         observability: ObservabilityRuntime | None = None,
     ) -> None:
         self.provider = provider
@@ -87,6 +89,7 @@ class AgentLoop:
             observability=self.observability,
         )
         self.tool_registry = tool_registry
+        self.skill_catalog = skill_catalog
 
     async def run(
         self,
@@ -157,12 +160,14 @@ class AgentLoop:
             if compacted:
                 session = self.session_manager.get_or_create(session_key)
             memory_text = self.memory_store.read_memory()
+            skills_text = self.skill_catalog.render_for_prompt() if self.skill_catalog is not None else ""
             summarized = await self.context_budget.ensure_budget(
                 session,
                 self.config,
                 user_text,
                 model=self.config.model or self.provider.model,
                 memory_text=memory_text,
+                skills_text=skills_text,
                 archive_history=self.memory_store.append_history,
             )
             if summarized:
@@ -172,7 +177,7 @@ class AgentLoop:
             prepare_span.set_attribute("history_messages", len(session.messages))
             prepare_span.set_attribute("memory_chars", len(memory_text))
         with self.observability.span("context.build", "agent") as build_span:
-            messages = self._messages_for_run(session, user_text, memory_text)
+            messages = self._messages_for_run(session, user_text, memory_text, skills_text)
             build_span.set_attribute("message_count", len(messages))
             build_span.set_attribute("input_chars", len(user_text))
         with self.observability.span("session.persist_input", "storage"):
@@ -319,7 +324,13 @@ class AgentLoop:
             return title
         return title[: limit - 3].rstrip() + "..."
 
-    def _messages_for_run(self, session: Session, user_text: str, memory_text: str = "") -> list[Message]:
+    def _messages_for_run(
+        self,
+        session: Session,
+        user_text: str,
+        memory_text: str = "",
+        skills_text: str = "",
+    ) -> list[Message]:
         return self.context_builder.build_messages(
             self.config,
             session.messages,
@@ -328,6 +339,7 @@ class AgentLoop:
             memory_text=memory_text,
             user_text=self.memory_store.read_user(),
             soul_text=self.memory_store.read_soul(),
+            skills_text=skills_text,
         )
 
     def _tool_runtime_context(

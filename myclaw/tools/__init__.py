@@ -17,6 +17,7 @@ from myclaw.tools.notebook import NotebookEditTool
 from myclaw.tools.registry import ToolRegistry
 from myclaw.tools.self import MyTool
 from myclaw.tools.shell import ExecTool
+from myclaw.tools.skill import SkillLoadTool
 from myclaw.tools.spawn import SpawnTool
 from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
 from myclaw.tools.web import WebFetchTool, WebSearchTool
@@ -35,6 +36,7 @@ __all__ = [
     "MyTool",
     "NotebookEditTool",
     "ReadFileTool",
+    "SkillLoadTool",
     "SpawnTool",
     "TaskCreateTool",
     "TaskGetTool",

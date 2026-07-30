@@ -469,6 +469,31 @@ def test_build_agent_loop_registers_default_tools(tmp_path, monkeypatch):
     ).read_text(encoding="utf-8")
 
 
+def test_build_agent_loop_discovers_skills_and_applies_disabled_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    workspace = tmp_path / "workspace"
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(workspace))
+    monkeypatch.setenv("MYCLAW_DISABLED_SKILLS", " disabled, ,missing ")
+    for name in ("disabled", "review"):
+        skill_dir = workspace / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\n{name} body\n",
+            encoding="utf-8",
+        )
+
+    loop = build_agent_loop()
+
+    assert loop.skill_catalog is not None
+    assert loop.skill_catalog.names == ("review",)
+    assert loop.tool_registry is not None
+    skill_load = loop.tool_registry.get("skill_load")
+    assert skill_load is not None
+    assert skill_load.parameters["properties"]["name"]["enum"] == ["review"]
+
+
 def test_load_env_file_reads_project_env_without_overwriting_existing_values(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(

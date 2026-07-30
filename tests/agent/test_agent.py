@@ -9,6 +9,7 @@ from myclaw.providers import FakeProvider
 from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry, build_default_tool_registry
 from myclaw.providers import LLMResponse
 from myclaw.session import SessionManager
+from myclaw.skills import SkillCatalog
 from myclaw.tools.base import get_current_tool_context
 
 SESSION_KEY = "cli:direct"
@@ -746,6 +747,39 @@ def test_run_injects_existing_memory_into_system_context(tmp_path):
         "role": "system",
         "content": "Base system.\n\nLong-term memory:\n# Memory\n\n- User prefers concise answers.",
     }
+
+
+def test_run_injects_skill_catalog_without_loading_skill_body(tmp_path, monkeypatch):
+    manager = SessionManager(tmp_path)
+    skill_dir = tmp_path / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review code safely\n---\nSecret detailed instructions.\n",
+        encoding="utf-8",
+    )
+    catalog = SkillCatalog.discover(tmp_path / "skills", platform="linux")
+    provider = MemoryCapturingProvider()
+    loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt="Base system."),
+        session_manager=manager,
+        skill_catalog=catalog,
+    )
+    captured = {}
+
+    async def record_budget(*args, **kwargs):
+        captured["skills_text"] = kwargs.get("skills_text")
+        return False
+
+    monkeypatch.setattr(loop.context_budget, "ensure_budget", record_budget)
+
+    asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    assert "Available skills:" in system_prompt
+    assert "- review: Review code safely" in system_prompt
+    assert "Secret detailed instructions." not in system_prompt
+    assert captured["skills_text"] == catalog.render_for_prompt()
 
 
 class RememberThenCaptureProvider:

@@ -174,6 +174,37 @@ MYCLAW_DREAM_INTERVAL_MINUTES=120
 如需回退，请直接在记忆仓库中使用 Git，例如：
 `git -C ~/.myclaw/workspace/memory revert <hash>`。
 
+## Skills
+
+助手会在启动时扫描 `${MYCLAW_WORKSPACE}/skills/*/SKILL.md`（默认位于
+`~/.myclaw/workspace/skills`）。每个技能使用 YAML frontmatter 描述名称、
+用途和可选平台，正文保存仅在任务需要时才加载的操作指引：
+
+```markdown
+---
+name: code-review
+description: Review code structure, call chains, and implementation risks
+platforms: [linux, darwin]
+---
+
+Inspect the real entrypoints and trace calls before drawing conclusions.
+```
+
+`name` 必须是最多 64 个字符的小写 ASCII slug，`description` 必填，
+`platforms` 可省略或使用 `linux`、`darwin`、`windows`。单个 `SKILL.md`
+最大为 12,000 bytes。格式错误、路径越界、当前平台不兼容或名称重复的技能
+不会启用，也不会影响其他技能和助手启动。
+
+启动时只有有效技能的名称和描述会进入模型上下文；当技能与任务匹配时，模型可调用
+`skill_load` 读取正文。修改技能元数据或新增技能后需要重启进程，当前版本不支持热重载。
+可通过逗号分隔的环境变量禁用指定技能：
+
+```bash
+MYCLAW_DISABLED_SKILLS=code-review,legacy-skill
+```
+
+Skills 当前只提供指令加载，不安装依赖、不执行技能代码，也不改变内置工具或 MCP 配置。
+
 ## MCP 服务器
 
 助手可以挂载外部 [MCP](https://modelcontextprotocol.io) 服务器提供的工具。在工作区中

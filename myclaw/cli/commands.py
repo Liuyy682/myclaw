@@ -21,6 +21,7 @@ from myclaw.config import (
     DEFAULT_MAX_PENDING_REQUESTS,
     DEFAULT_MAX_SESSION_PENDING_REQUESTS,
     DEFAULT_QUEUE_WAIT_TIMEOUT_SECONDS,
+    DISABLED_SKILLS_ENV_VAR,
     DEFAULT_LLM_CIRCUIT_FAILURE_THRESHOLD,
     DEFAULT_LLM_CIRCUIT_OPEN_SECONDS,
     DEFAULT_LLM_MAX_RETRIES,
@@ -47,6 +48,7 @@ from myclaw.config import (
     OPENAI_BASE_URL_ENV_VAR,
     OPENAI_MODEL_ENV_VAR,
     QUEUE_WAIT_TIMEOUT_SECONDS_ENV_VAR,
+    SKILLS_DIRNAME,
     load_env_file,
 )
 from myclaw.gateway.server import run_gateway
@@ -54,7 +56,8 @@ from myclaw.providers import FakeProvider, OpenAICompatibleProvider
 from myclaw.providers.openai_compat import LLMResilienceConfig
 from myclaw.observability import ObservabilityRuntime, ObservedProvider
 from myclaw.session import SessionManager
-from myclaw.tools import build_default_tool_registry
+from myclaw.skills import SkillCatalog
+from myclaw.tools import SkillLoadTool, build_default_tool_registry
 
 _DEFAULT_DREAM_LOG_LIMIT = 10
 
@@ -63,7 +66,13 @@ def build_agent_loop() -> AgentLoop:
     load_env_file()
     session_manager = SessionManager()
     observability = ObservabilityRuntime(session_manager.workspace)
+    skill_catalog = SkillCatalog.discover(
+        session_manager.workspace / SKILLS_DIRNAME,
+        disabled=_env_list(DISABLED_SKILLS_ENV_VAR),
+    )
     tool_registry = build_default_tool_registry(Path.cwd(), memory_workspace=session_manager.workspace)
+    if len(skill_catalog):
+        tool_registry.register(SkillLoadTool(skill_catalog))
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
     idle_compact_after_minutes = _env_int(IDLE_COMPACT_AFTER_MINUTES_ENV_VAR, default=0)
     dream_interval_minutes = _env_int(DREAM_INTERVAL_MINUTES_ENV_VAR, default=0)
@@ -85,6 +94,7 @@ def build_agent_loop() -> AgentLoop:
             ),
             session_manager=session_manager,
             tool_registry=tool_registry,
+            skill_catalog=skill_catalog,
             observability=observability,
         )
     return AgentLoop(
@@ -97,6 +107,7 @@ def build_agent_loop() -> AgentLoop:
         ),
         session_manager=session_manager,
         tool_registry=tool_registry,
+        skill_catalog=skill_catalog,
         observability=observability,
     )
 
@@ -119,6 +130,10 @@ def _env_float(name: str, *, default: float) -> float:
         return float(raw_value)
     except ValueError as exc:
         raise ValueError(f"{name} must be a number") from exc
+
+
+def _env_list(name: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in os.environ.get(name, "").split(",") if item.strip())
 
 
 def _dispatcher_limits() -> DispatcherLimits:

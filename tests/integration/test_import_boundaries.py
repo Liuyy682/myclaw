@@ -21,7 +21,8 @@ def test_explicit_domain_boundaries_are_available():
     from myclaw.gateway.server import HttpGatewayServer, run_gateway
     from myclaw.providers import FakeProvider, LLMResponse, OpenAICompatibleProvider
     from myclaw.session import Session, SessionManager
-    from myclaw.tools import FunctionTool, Tool, ToolCallRequest, ToolRegistry, build_default_tool_registry
+    from myclaw.skills import SkillCatalog, SkillDefinition, SkillMetadata
+    from myclaw.tools import FunctionTool, SkillLoadTool, Tool, ToolCallRequest, ToolRegistry, build_default_tool_registry
 
     exported = (
         AgentConfig,
@@ -39,6 +40,10 @@ def test_explicit_domain_boundaries_are_available():
         OpenAICompatibleProvider,
         Session,
         SessionManager,
+        SkillCatalog,
+        SkillDefinition,
+        SkillMetadata,
+        SkillLoadTool,
         FunctionTool,
         Tool,
         ToolCallRequest,

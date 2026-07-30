@@ -103,6 +103,7 @@ class ContextBudgetManager:
         *,
         model: str,
         memory_text: str | None = None,
+        skills_text: str | None = None,
         archive_history: Callable[[str], None] | None = None,
     ) -> bool:
         estimator = TokenEstimator(model)
@@ -116,6 +117,7 @@ class ContextBudgetManager:
                 current_user_text,
                 context_summary=summary,
                 memory_text=memory_text,
+                skills_text=skills_text,
             )
             if self._within_budget(prompt_messages, config, estimator):
                 return updated
@@ -344,8 +346,9 @@ class ContextBuilder:
         memory_text: str | None = None,
         user_text: str | None = None,
         soul_text: str | None = None,
+        skills_text: str | None = None,
     ) -> list[Message]:
-        messages = self._initial_messages(config, memory_text, user_text, soul_text)
+        messages = self._initial_messages(config, memory_text, user_text, soul_text, skills_text)
         summary_message, covered_count = self._summary_message(context_summary, len(session_messages))
         if summary_message is not None:
             messages.append(summary_message)
@@ -370,9 +373,16 @@ class ContextBuilder:
         memory_text: str | None = None,
         user_text: str | None = None,
         soul_text: str | None = None,
+        skills_text: str | None = None,
     ) -> list[Message]:
         messages: list[Message] = []
-        system_prompt = ContextBuilder._system_prompt(config.system_prompt, memory_text, user_text, soul_text)
+        system_prompt = ContextBuilder._system_prompt(
+            config.system_prompt,
+            memory_text,
+            user_text,
+            soul_text,
+            skills_text,
+        )
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(dict(message) for message in config.history)
@@ -384,14 +394,16 @@ class ContextBuilder:
         memory_text: str | None,
         user_text: str | None = None,
         soul_text: str | None = None,
+        skills_text: str | None = None,
     ) -> str:
         base = system_prompt.strip()
         soul = soul_text.strip() if isinstance(soul_text, str) else ""
         user = user_text.strip() if isinstance(user_text, str) else ""
         memory = memory_text.strip() if isinstance(memory_text, str) else ""
+        skills = skills_text.strip() if isinstance(skills_text, str) else ""
 
         # SOUL is the assistant's persona — it leads, before the base instructions.
-        head = "\n\n".join(part for part in (soul, base) if part)
+        head = "\n\n".join(part for part in (soul, base, skills) if part)
 
         # USER and MEMORY are facts — they share the long-term memory block. MEMORY
         # stays unlabeled (the default content); USER gets a light subsection header.
