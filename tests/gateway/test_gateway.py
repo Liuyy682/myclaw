@@ -5,6 +5,7 @@ import select
 import socket
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, SubmissionResult
@@ -15,6 +16,8 @@ from myclaw.providers import FakeProvider
 from myclaw.memory import MemoryStore
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, ObservedProvider
 from myclaw.session import Session, SessionManager
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class RecordingDispatcher:
@@ -688,7 +691,7 @@ def test_gateway_cli_starts_http_server_and_terminates_cleanly(tmp_path):
     env["MYCLAW_WORKSPACE"] = str(tmp_path / "workspace")
     proc = subprocess.Popen(
         [sys.executable, "-m", "myclaw", "gateway", "--host", "127.0.0.1", "--port", "0"],
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -719,7 +722,7 @@ def test_gateway_cli_reports_port_in_use_without_traceback(tmp_path):
 
         result = subprocess.run(
             [sys.executable, "-m", "myclaw", "gateway", "--host", "127.0.0.1", "--port", str(port)],
-            cwd="/root/myclaw",
+            cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,
             text=True,

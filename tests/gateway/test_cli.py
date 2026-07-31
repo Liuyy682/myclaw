@@ -4,6 +4,7 @@ import subprocess
 import sys
 import os
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,8 @@ from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.cli.commands import build_agent_loop, build_dispatcher, dispatch_text, run_interactive
 from myclaw.config.env import load_env_file
 from myclaw.session import SessionManager
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):
@@ -23,7 +26,7 @@ def test_cli_single_turn_uses_fake_provider_without_api_key(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "myclaw", "hello"],
         check=True,
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -41,7 +44,7 @@ def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
     subprocess.run(
         [sys.executable, "-m", "myclaw", "first"],
         check=True,
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -49,7 +52,7 @@ def test_cli_single_turn_persists_and_reuses_local_session(tmp_path):
     subprocess.run(
         [sys.executable, "-m", "myclaw", "second"],
         check=True,
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -79,7 +82,7 @@ def test_cli_single_turn_accepts_session_option(tmp_path):
     subprocess.run(
         [sys.executable, "-m", "myclaw", "--session", "work", "hello"],
         check=True,
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -399,7 +402,7 @@ def test_cli_interactive_persists_two_turns(tmp_path):
         [sys.executable, "-m", "myclaw"],
         input="first\nsecond\nexit\n",
         check=True,
-        cwd="/root/myclaw",
+        cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
         text=True,
