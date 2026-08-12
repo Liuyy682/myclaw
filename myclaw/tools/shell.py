@@ -8,6 +8,7 @@ from typing import Any
 
 from myclaw.tools.base import Tool
 from myclaw.tools.filesystem import _is_blocked_device, _is_under
+from myclaw.tools.models import ExecInput
 
 _BWRAP_AVAILABLE: bool | None = None
 
@@ -51,6 +52,7 @@ async def _detect_bwrap() -> bool:
 class ExecTool(Tool):
     read_only = False
     exclusive = True
+    input_model = ExecInput
 
     _BLOCKED_PATTERNS = (
         re.compile(r"\brm\s+(?=[^;&|]*-[A-Za-z]*r)(?=[^;&|]*-[A-Za-z]*f)[^;&|]*", re.IGNORECASE),

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
 SpawnCallback = Callable[[str, str | None], Awaitable[str]]
 AskCallback = Callable[[str, list[str]], Awaitable[str]]
 
@@ -46,6 +48,10 @@ def tool_context(context: ToolRuntimeContext):
 class Tool(Protocol):
     read_only: bool
     exclusive: bool
+    # Built-in tools may opt into runtime Pydantic validation.  Adapters such
+    # as MCP tools intentionally leave this unset and continue using their
+    # remote input schema unchanged.
+    input_model: type[BaseModel] | None
 
     @property
     def name(self) -> str:
@@ -84,6 +90,7 @@ class FunctionTool:
     read_only: bool = False
     exclusive: bool = False
     context: ToolRuntimeContext | None = None
+    input_model: type[BaseModel] | None = None
 
     def cast_params(self, params: dict[str, Any]) -> dict[str, Any]:
         return dict(params)

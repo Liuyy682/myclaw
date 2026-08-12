@@ -4,6 +4,8 @@ import json
 import contextlib
 from typing import Any
 
+from pydantic import ValidationError
+
 from myclaw.providers.base import ToolCallRequest
 from myclaw.config import TOOL_RESULT_TRUNCATED_TEMPLATE
 from myclaw.tools.base import Tool, ToolRuntimeContext, tool_context
@@ -62,10 +64,19 @@ class ToolRegistry:
             arguments = cast_arguments
             if not isinstance(arguments, dict):
                 return None, {}, f"Error casting {request.name}: cast_params must return a dict"
+        input_model = getattr(tool, "input_model", None)
+        if input_model is not None:
+            try:
+                validated = input_model.model_validate(arguments)
+            except ValidationError as exc:
+                return None, {}, f"Error validating {request.name}: {_format_validation_error(exc)}"
+            arguments = validated.model_dump(exclude_unset=True)
         validate_params = getattr(tool, "validate_params", None)
         if callable(validate_params):
             try:
                 validate_params(arguments)
+            except ValidationError as exc:
+                return None, {}, f"Error validating {request.name}: {_format_validation_error(exc)}"
             except Exception as exc:
                 return None, {}, f"Error validating {request.name}: {exc}"
         return tool, arguments, None
@@ -160,3 +171,16 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    """Return one redacted, stable first-error summary for tool callers."""
+
+    details = error.errors(include_url=False, include_input=False)
+    if not details:
+        return "input: Invalid value"
+    first = details[0]
+    location = first.get("loc") or ("input",)
+    field = ".".join(str(part) for part in location)
+    message = " ".join(str(first.get("msg", "Invalid value")).split())
+    return f"{field}: {message}"

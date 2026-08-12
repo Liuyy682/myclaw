@@ -4,9 +4,12 @@ from typing import Any
 
 from myclaw.memory import MemoryStore
 from myclaw.tools.base import Tool
+from myclaw.tools.models import MemoryWriteInput
 
 
 class MemoryWriteTool(Tool):
+    input_model = MemoryWriteInput
+
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 

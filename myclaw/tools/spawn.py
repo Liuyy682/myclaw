@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from myclaw.tools.base import Tool, get_current_tool_context
+from myclaw.tools.models import SpawnInput
 
 
 class SpawnTool(Tool):
     read_only = False
     exclusive = False
+    input_model = SpawnInput
 
     @property
     def name(self) -> str:

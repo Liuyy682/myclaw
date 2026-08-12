@@ -9,11 +9,13 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 from myclaw.tools.base import Tool
+from myclaw.tools.models import WebFetchInput, WebSearchInput
 
 
 class WebFetchTool(Tool):
     read_only = True
     exclusive = False
+    input_model = WebFetchInput
 
     @property
     def name(self) -> str:
@@ -59,6 +61,7 @@ class WebFetchTool(Tool):
 class WebSearchTool(Tool):
     read_only = True
     exclusive = False
+    input_model = WebSearchInput
 
     @property
     def name(self) -> str:

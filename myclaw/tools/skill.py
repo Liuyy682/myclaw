@@ -4,11 +4,13 @@ from typing import Any
 
 from myclaw.skills import SkillCatalog
 from myclaw.tools.base import Tool
+from myclaw.tools.models import SkillLoadInput
 
 
 class SkillLoadTool(Tool):
     read_only = True
     exclusive = False
+    input_model = SkillLoadInput
 
     def __init__(self, catalog: SkillCatalog) -> None:
         self._catalog = catalog

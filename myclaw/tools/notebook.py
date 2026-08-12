@@ -4,11 +4,13 @@ import json
 from typing import Any
 
 from myclaw.tools.filesystem import _FilesystemTool
+from myclaw.tools.models import NotebookEditInput
 
 
 class NotebookEditTool(_FilesystemTool):
     read_only = False
     exclusive = True
+    input_model = NotebookEditInput
 
     @property
     def name(self) -> str:

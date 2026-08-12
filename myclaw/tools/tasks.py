@@ -4,6 +4,7 @@ from typing import Any
 
 from myclaw.tasks import TaskStore
 from myclaw.tools.base import Tool
+from myclaw.tools.models import TaskCreateInput, TaskGetInput, TaskListInput, TaskUpdateInput
 
 
 class _TaskTool(Tool):
@@ -15,6 +16,8 @@ class _TaskTool(Tool):
 
 
 class TaskCreateTool(_TaskTool):
+    input_model = TaskCreateInput
+
     @property
     def name(self) -> str:
         return "task_create"
@@ -65,6 +68,7 @@ class TaskCreateTool(_TaskTool):
 
 class TaskListTool(_TaskTool):
     read_only = True
+    input_model = TaskListInput
 
     @property
     def name(self) -> str:
@@ -92,6 +96,7 @@ class TaskListTool(_TaskTool):
 
 class TaskGetTool(_TaskTool):
     read_only = True
+    input_model = TaskGetInput
 
     @property
     def name(self) -> str:
@@ -119,6 +124,8 @@ class TaskGetTool(_TaskTool):
 
 
 class TaskUpdateTool(_TaskTool):
+    input_model = TaskUpdateInput
+
     @property
     def name(self) -> str:
         return "task_update"

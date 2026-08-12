@@ -5,11 +5,13 @@ from typing import Any
 
 from myclaw.cron import CronStore
 from myclaw.tools.base import Tool, get_current_tool_context
+from myclaw.tools.models import CronInput
 
 
 class CronTool(Tool):
     read_only = False
     exclusive = False
+    input_model = CronInput
 
     def __init__(self, store: CronStore) -> None:
         self.store = store

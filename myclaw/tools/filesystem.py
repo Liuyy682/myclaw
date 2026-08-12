@@ -15,6 +15,7 @@ from myclaw.config import (
 from myclaw.memory import MemoryStore
 from myclaw.tools.base import Tool
 from myclaw.tools.memory import MemoryWriteTool
+from myclaw.tools.models import EditFileInput, GlobInput, GrepInput, ListDirInput, ReadFileInput, WriteFileInput
 from myclaw.tools.registry import ToolRegistry
 
 
@@ -136,6 +137,8 @@ class _FilesystemTool(Tool):
 
 
 class ReadFileTool(_FilesystemTool):
+    input_model = ReadFileInput
+
     @property
     def name(self) -> str:
         return "read_file"
@@ -191,6 +194,8 @@ class ReadFileTool(_FilesystemTool):
 
 
 class ListDirTool(_FilesystemTool):
+    input_model = ListDirInput
+
     @property
     def name(self) -> str:
         return "list_dir"
@@ -263,6 +268,8 @@ class ListDirTool(_FilesystemTool):
 
 
 class EditFileTool(_FilesystemTool):
+    input_model = EditFileInput
+
     @property
     def name(self) -> str:
         return "edit_file"
@@ -325,6 +332,8 @@ class EditFileTool(_FilesystemTool):
 
 
 class GrepTool(_FilesystemTool):
+    input_model = GrepInput
+
     @property
     def name(self) -> str:
         return "grep"
@@ -403,6 +412,8 @@ class GrepTool(_FilesystemTool):
 
 
 class GlobTool(_FilesystemTool):
+    input_model = GlobInput
+
     @property
     def name(self) -> str:
         return "glob"
@@ -477,6 +488,8 @@ class GlobTool(_FilesystemTool):
 
 
 class WriteFileTool(_FilesystemTool):
+    input_model = WriteFileInput
+
     @property
     def name(self) -> str:
         return "write_file"
