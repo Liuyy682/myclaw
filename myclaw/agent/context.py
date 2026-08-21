@@ -63,8 +63,15 @@ class TokenEstimator:
 
         try:
             return tiktoken.encoding_for_model(model)
-        except KeyError:
-            return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            # tiktoken may need to fetch an encoding on first use.  Context
+            # budgeting must remain available in offline or DNS-failure
+            # environments, where the deterministic character heuristic below
+            # is safer than failing the whole Agent turn.
+            try:
+                return tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                return None
 
 
 class ContextBudgetManager:

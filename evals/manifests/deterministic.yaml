@@ -1,0 +1,389 @@
+version: 1
+name: deterministic
+description: >-
+  Deterministic, fixture-backed checks for the current MyClaw runtime. Every
+  case points at a collected pytest node and uses only relative fixture paths.
+dataset: evals/datasets/live_core.jsonl
+fixture:
+  type: temporary_workspace
+  path_policy: relative_only
+  assertion_types:
+    - field_equals
+    - field_contains
+    - count_equals
+    - set_equals
+    - file_exists
+    - file_not_exists
+category_counts:
+  tool: 12
+  repo_task: 16
+  context: 8
+  recovery: 8
+  safety: 8
+  coordination: 8
+cases:
+  - case_id: tool-001
+    category: tool
+    capability: tool_registry
+    claim: definitions_are_sorted_and_cached
+    metric_type: schema_stability
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_returns_cached_definitions_in_stable_name_order"
+  - case_id: tool-002
+    category: tool
+    capability: tool_registry
+    claim: function_tool_exposes_openai_schema
+    metric_type: schema_contract
+    pytest_node_id: "tests/tools/test_tools.py::test_function_tool_exposes_openai_schema"
+  - case_id: tool-003
+    category: tool
+    capability: tool_registry
+    claim: arguments_are_cast_and_validated_before_execution
+    metric_type: parameter_validation
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_casts_and_validates_tool_arguments_before_execute"
+  - case_id: tool-004
+    category: tool
+    capability: tool_runtime_context
+    claim: execution_receives_session_context
+    metric_type: context_propagation
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_provides_runtime_context_during_tool_execution"
+  - case_id: tool-005
+    category: tool
+    capability: tool_registry
+    claim: sync_and_async_functions_are_supported
+    metric_type: execution_correctness
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_executes_sync_and_async_function_tools"
+  - case_id: tool-006
+    category: tool
+    capability: tool_registry
+    claim: string_results_are_bounded
+    metric_type: result_boundedness
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_truncates_normalized_string_tool_results"
+  - case_id: tool-007
+    category: tool
+    capability: tool_registry
+    claim: json_results_are_bounded
+    metric_type: result_boundedness
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_truncates_normalized_json_tool_results"
+  - case_id: tool-008
+    category: tool
+    capability: tool_registry
+    claim: tool_errors_are_readable_and_stable
+    metric_type: error_surface
+    pytest_node_id: "tests/tools/test_tools.py::test_registry_returns_readable_errors_for_unknown_tools_bad_arguments_and_exceptions"
+  - case_id: tool-009
+    category: tool
+    capability: pydantic_tool_inputs
+    claim: valid_inputs_are_accepted_and_extra_fields_are_forbidden
+    metric_type: input_contract
+    pytest_node_id: "tests/tools/test_pydantic_validation.py::test_every_tool_input_model_accepts_valid_input_and_forbids_extra[AskUserInput-valid0]"
+  - case_id: tool-010
+    category: tool
+    capability: pydantic_tool_inputs
+    claim: preparation_order_is_cast_validate_execute
+    metric_type: lifecycle_order
+    pytest_node_id: "tests/tools/test_pydantic_validation.py::test_registry_runs_cast_model_dump_validate_and_execute_in_order"
+  - case_id: tool-011
+    category: tool
+    capability: pydantic_tool_inputs
+    claim: validation_details_are_redacted_to_one_line
+    metric_type: error_redaction
+    pytest_node_id: "tests/tools/test_pydantic_validation.py::test_registry_redacts_pydantic_validation_details_to_one_line"
+  - case_id: tool-012
+    category: tool
+    capability: pydantic_tool_inputs
+    claim: missing_or_non_object_arguments_do_not_execute
+    metric_type: input_rejection
+    pytest_node_id: "tests/tools/test_pydantic_validation.py::test_registry_rejects_missing_required_and_non_object_without_executing_spy"
+
+  - case_id: repo-task-001
+    category: repo_task
+    capability: filesystem_read
+    claim: read_file_returns_line_numbered_ranges
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_read_file_returns_line_numbered_text_and_supports_ranges"
+  - case_id: repo-task-002
+    category: repo_task
+    capability: filesystem_read
+    claim: list_dir_is_sorted_and_truncated
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_list_dir_lists_entries_recursively_ignores_noise_and_truncates"
+  - case_id: repo-task-003
+    category: repo_task
+    capability: filesystem_search
+    claim: grep_returns_line_numbers_and_case_options
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_grep_finds_matches_with_line_numbers_case_options_and_ignored_dirs"
+  - case_id: repo-task-004
+    category: repo_task
+    capability: filesystem_search
+    claim: glob_returns_relative_matches_with_limits
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_glob_returns_relative_matches_recursively_skips_ignored_dirs_and_truncates"
+  - case_id: repo-task-005
+    category: repo_task
+    capability: filesystem_write
+    claim: write_file_creates_parents_and_overwrites_atomically
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_write_file_creates_parent_dirs_overwrites_and_blocks_invalid_targets"
+  - case_id: repo-task-006
+    category: repo_task
+    capability: filesystem_edit
+    claim: edit_file_replaces_exactly_one_match
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_edit_file_replaces_exactly_one_match_and_preserves_rest"
+  - case_id: repo-task-007
+    category: repo_task
+    capability: notebook_edit
+    claim: notebook_cell_source_is_replaced
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_notebook_edit_replaces_existing_cell_source"
+  - case_id: repo-task-008
+    category: repo_task
+    capability: task_store
+    claim: forward_status_transitions_are_allowed
+    metric_type: task_state_transition
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_state_machine_allows_forward_and_rejects_illegal_transitions"
+  - case_id: repo-task-009
+    category: repo_task
+    capability: task_store
+    claim: completed_cannot_be_reached_by_skipping_states
+    metric_type: task_state_transition
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_state_machine_rejects_skipping_straight_to_completed"
+  - case_id: repo-task-010
+    category: repo_task
+    capability: task_store
+    claim: repeated_status_updates_are_idempotent
+    metric_type: task_state_transition
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_same_status_update_is_idempotent"
+  - case_id: repo-task-011
+    category: repo_task
+    capability: task_store
+    claim: dependencies_must_exist
+    metric_type: dependency_validation
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_dependency_must_exist"
+  - case_id: repo-task-012
+    category: repo_task
+    capability: task_store
+    claim: dependency_cycles_are_rejected
+    metric_type: dependency_validation
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_dependency_cycle_is_rejected"
+  - case_id: repo-task-013
+    category: repo_task
+    capability: task_store
+    claim: tasks_cannot_start_before_dependencies_complete
+    metric_type: dependency_validation
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_cannot_start_until_dependencies_completed"
+  - case_id: repo-task-014
+    category: repo_task
+    capability: task_store
+    claim: task_file_lock_prevents_lost_updates
+    metric_type: concurrent_write_integrity
+    pytest_node_id: "tests/storage/test_tasks_store.py::test_file_lock_prevents_lost_updates_across_processes"
+  - case_id: repo-task-015
+    category: repo_task
+    capability: task_tools
+    claim: task_tools_persist_create_list_get_and_update
+    metric_type: task_success
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_task_tools_persist_create_list_get_and_update"
+  - case_id: repo-task-016
+    category: repo_task
+    capability: session_storage
+    claim: session_save_creates_jsonl_with_metadata
+    metric_type: persistence_correctness
+    pytest_node_id: "tests/storage/test_session.py::test_save_creates_jsonl_with_metadata_and_messages"
+
+  - case_id: context-001
+    category: context
+    capability: context_builder
+    claim: structured_tool_history_is_preserved
+    metric_type: context_structure
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_preserves_structured_tool_history_without_timestamps"
+  - case_id: context-002
+    category: context
+    capability: context_builder
+    claim: orphan_tool_results_are_dropped
+    metric_type: context_structure
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_drops_orphan_tool_results"
+  - case_id: context-003
+    category: context
+    capability: context_builder
+    claim: missing_tool_results_are_backfilled
+    metric_type: context_repair
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_backfills_missing_tool_results"
+  - case_id: context-004
+    category: context
+    capability: context_builder
+    claim: tool_results_are_truncated_only_for_prompt
+    metric_type: context_budget
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_truncates_tool_results_for_prompt_only"
+  - case_id: context-005
+    category: context
+    capability: context_summary
+    claim: summary_is_inserted_and_covered_messages_skipped
+    metric_type: fact_retention
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_inserts_summary_and_skips_covered_messages"
+  - case_id: context-006
+    category: context
+    capability: memory_injection
+    claim: memory_is_injected_into_system_context
+    metric_type: fact_retention
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_injects_memory_into_system_context"
+  - case_id: context-007
+    category: context
+    capability: memory_layers
+    claim: soul_user_and_memory_layers_are_ordered
+    metric_type: layer_ordering
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_layers_soul_user_and_memory"
+  - case_id: context-008
+    category: context
+    capability: skill_catalog
+    claim: skill_catalog_precedes_long_term_memory
+    metric_type: layer_ordering
+    pytest_node_id: "tests/agent/test_context.py::test_context_builder_places_skill_catalog_before_long_term_memory"
+
+  - case_id: recovery-001
+    category: recovery
+    capability: agent_loop
+    claim: provider_failure_keeps_user_turn
+    metric_type: recovery_success
+    pytest_node_id: "tests/agent/test_agent.py::test_provider_error_returns_clear_message_and_keeps_user_turn"
+  - case_id: recovery-002
+    category: recovery
+    capability: agent_loop
+    claim: interrupted_user_turn_is_restored
+    metric_type: recovery_success
+    pytest_node_id: "tests/agent/test_agent.py::test_run_restores_pending_user_turn_after_interruption"
+  - case_id: recovery-003
+    category: recovery
+    capability: runtime_checkpoint
+    claim: pending_tool_result_is_reconstructed
+    metric_type: recovery_success
+    pytest_node_id: "tests/agent/test_agent.py::test_run_restores_runtime_checkpoint_with_pending_tool_result"
+  - case_id: recovery-004
+    category: recovery
+    capability: session_storage
+    claim: valid_lines_survive_corrupt_jsonl_entries
+    metric_type: transcript_recovery
+    pytest_node_id: "tests/storage/test_session.py::test_load_recovers_valid_lines_from_corrupt_jsonl"
+  - case_id: recovery-005
+    category: recovery
+    capability: session_storage
+    claim: successful_save_leaves_no_temporary_file
+    metric_type: atomic_write
+    pytest_node_id: "tests/storage/test_session.py::test_save_does_not_leave_tmp_file_after_success"
+  - case_id: recovery-006
+    category: recovery
+    capability: transcript_storage
+    claim: append_failure_is_contained
+    metric_type: failure_containment
+    pytest_node_id: "tests/storage/test_session.py::test_transcript_store_append_failure_does_not_raise"
+  - case_id: recovery-007
+    category: recovery
+    capability: agent_runner
+    claim: interrupted_tool_checkpoint_marks_pending_work
+    metric_type: checkpoint_reconstruction
+    pytest_node_id: "tests/agent/test_runner.py::test_runner_returns_stable_message_for_temporary_llm_outage"
+  - case_id: recovery-008
+    category: recovery
+    capability: observability
+    claim: stale_running_trace_is_marked_abandoned
+    metric_type: recovery_status
+    pytest_node_id: "tests/observability/test_observability.py::test_running_trace_from_previous_process_is_marked_abandoned"
+
+  - case_id: safety-001
+    category: safety
+    capability: filesystem_isolation
+    claim: read_file_rejects_workspace_escape
+    metric_type: path_isolation
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_read_file_blocks_paths_outside_workspace_and_symlink_escape"
+  - case_id: safety-002
+    category: safety
+    capability: filesystem_isolation
+    claim: invalid_read_targets_return_errors
+    metric_type: input_rejection
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_read_file_returns_clear_errors_for_invalid_targets"
+  - case_id: safety-003
+    category: safety
+    capability: filesystem_isolation
+    claim: invalid_directory_targets_return_errors
+    metric_type: input_rejection
+    pytest_node_id: "tests/tools/test_filesystem_tools.py::test_list_dir_returns_clear_errors_for_invalid_targets_and_outside_paths"
+  - case_id: safety-004
+    category: safety
+    capability: exec_sandbox
+    claim: destructive_commands_are_blocked
+    metric_type: command_safety
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_exec_tool_runs_workspace_bounded_commands_and_blocks_destructive_commands"
+  - case_id: safety-005
+    category: safety
+    capability: exec_sandbox
+    claim: sandbox_reports_workspace_scoped_execution
+    metric_type: sandbox_enforcement
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_exec_sandbox_reports_sandboxed_and_can_write_workspace"
+  - case_id: safety-006
+    category: safety
+    capability: exec_sandbox
+    claim: system_paths_are_read_only
+    metric_type: sandbox_enforcement
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_exec_sandbox_makes_system_paths_read_only"
+  - case_id: safety-007
+    category: safety
+    capability: exec_sandbox
+    claim: network_is_blocked_by_default
+    metric_type: network_policy
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_exec_sandbox_blocks_network_by_default_and_allows_when_requested"
+  - case_id: safety-008
+    category: safety
+    capability: web_tools
+    claim: public_url_validation_rejects_private_addresses
+    metric_type: network_policy
+    pytest_node_id: "tests/tools/test_runtime_tools.py::test_web_tools_validate_urls_and_parse_simple_results"
+
+  - case_id: coordination-001
+    category: coordination
+    capability: dispatcher
+    claim: same_session_messages_are_serialized
+    metric_type: session_serialization
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_run_serializes_messages_with_same_session_key"
+  - case_id: coordination-002
+    category: coordination
+    capability: dispatcher
+    claim: different_sessions_can_run_concurrently
+    metric_type: cross_session_concurrency
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_run_allows_different_sessions_to_run_concurrently"
+  - case_id: coordination-003
+    category: coordination
+    capability: dispatcher
+    claim: session_and_global_capacity_are_enforced
+    metric_type: backpressure
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_submit_enforces_session_and_global_capacity"
+  - case_id: coordination-004
+    category: coordination
+    capability: dispatcher
+    claim: queue_timeout_releases_capacity_without_execution
+    metric_type: backpressure
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_queue_timeout_does_not_execute_and_releases_capacity"
+  - case_id: coordination-005
+    category: coordination
+    capability: dispatcher
+    claim: control_commands_bypass_request_capacity
+    metric_type: control_plane_priority
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_control_command_bypasses_full_request_capacity"
+  - case_id: coordination-006
+    category: coordination
+    capability: dispatcher
+    claim: status_reports_running_and_queued_messages
+    metric_type: coordination_observability
+    pytest_node_id: "tests/agent/test_dispatcher.py::test_dispatcher_status_reports_running_and_queued_messages"
+  - case_id: coordination-007
+    category: coordination
+    capability: gateway_deduplication
+    claim: request_id_deduplicates_matching_requests_and_rejects_conflicts
+    metric_type: deduplication
+    pytest_node_id: "tests/gateway/test_gateway.py::test_gateway_request_id_deduplicates_and_rejects_conflicts"
+  - case_id: coordination-008
+    category: coordination
+    capability: gateway_deduplication
+    claim: request_id_cache_expires_and_evicts_oldest_entries
+    metric_type: deduplication
+    pytest_node_id: "tests/gateway/test_gateway.py::test_gateway_request_id_cache_expires_and_evicts_oldest_entry"

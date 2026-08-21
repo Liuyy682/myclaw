@@ -174,6 +174,25 @@ MYCLAW_DREAM_INTERVAL_MINUTES=120
 如需回退，请直接在记忆仓库中使用 Git，例如：
 `git -C ~/.myclaw/workspace/memory revert <hash>`。
 
+## Agent Eval
+
+仓库提供一套旁路、规则评分的真实模型评测，不修改 Agent 主执行链路。内置数据集包含
+60 个隔离场景，覆盖工具调用、仓库任务、多轮上下文、checkpoint 中断恢复、安全边界
+和协作工具；每次运行只会写入临时工作区。
+
+```bash
+python -m myclaw.evals \
+  --dataset evals/datasets/live_core.jsonl \
+  --profile live \
+  --repeat 3 \
+  --output eval-results/live
+```
+
+`live` 使用现有 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL` Provider 配置，缺少 API Key 时会直接失败而不会降级为
+Fake Provider。可通过 `--case 'tool-*'` 或重复传入 `--tag` 过滤场景。输出包括逐次运行的
+`runs.jsonl`、聚合 `summary.json` 和 `report.md`；任务成功率与普通 pytest 机制回归通过率
+必须分开解释。`evals/manifests/deterministic.yaml` 维护了现有确定性测试与能力声明的映射。
+
 ## Skills
 
 助手会在启动时扫描 `${MYCLAW_WORKSPACE}/skills/*/SKILL.md`（默认位于

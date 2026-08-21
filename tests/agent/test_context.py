@@ -221,6 +221,21 @@ def test_token_estimator_fallback_counts_ascii_and_non_ascii_text():
     assert estimator.estimate_text("你好") == 2
 
 
+def test_token_estimator_falls_back_when_tiktoken_encoding_is_unavailable(monkeypatch):
+    import tiktoken
+
+    def unavailable(_name):
+        raise OSError("offline")
+
+    monkeypatch.setattr(tiktoken, "encoding_for_model", unavailable)
+    monkeypatch.setattr(tiktoken, "get_encoding", unavailable)
+
+    estimator = TokenEstimator("offline-model")
+
+    assert estimator.encoding is None
+    assert estimator.estimate_text("abcdefgh") == 2
+
+
 def test_token_estimator_estimates_chat_messages_with_overhead():
     estimator = TokenEstimator("demo-model", encoding=FakeEncoding())
 
