@@ -6,6 +6,8 @@ import pytest
 from myclaw.tools import ToolCallRequest, ToolRegistry
 from myclaw.memory import MemoryStore
 from myclaw.tools import MemoryWriteTool
+from myclaw.tools.base import ToolRuntimeContext
+from myclaw.tools.security import SecurityStore
 
 
 def test_memory_store_writes_markdown_without_history_jsonl(tmp_path):
@@ -33,8 +35,11 @@ def test_memory_store_rejects_blank_content(tmp_path):
 
 
 def test_memory_write_tool_executes_through_registry(tmp_path):
-    registry = ToolRegistry()
+    registry = ToolRegistry(security_store=SecurityStore(path=tmp_path / "security.db"))
     registry.register(MemoryWriteTool(MemoryStore(tmp_path)))
+
+    async def approve(_question, _choices):
+        return "allow"
 
     result = asyncio.run(
         registry.execute(
@@ -42,7 +47,8 @@ def test_memory_write_tool_executes_through_registry(tmp_path):
                 id="call_remember",
                 name="remember",
                 arguments={"content": "User prefers concise answers."},
-            )
+            ),
+            context=ToolRuntimeContext(session_key="test:memory", ask=approve),
         )
     )
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from contextlib import AsyncExitStack
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +16,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MCP_CONFIG_FILENAME = "mcp.json"
+
+
+def resolve_mcp_command(command: str) -> str:
+    """Resolve a stdio command to the executable path used for approval.
+
+    Bare commands that cannot currently be found are retained verbatim so a
+    missing executable remains an ordinary connection error rather than being
+    silently rewritten relative to the current working directory.
+    """
+
+    value = str(command)
+    resolved = shutil.which(value)
+    if resolved:
+        return str(Path(resolved).expanduser().resolve())
+
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path(".") or value.startswith((".", "~")):
+        return str(candidate.resolve())
+    return value
+
+
+def normalize_mcp_config(config: McpServerConfig) -> dict[str, Any]:
+    """Return the canonical, secret-bearing config used only for hashing.
+
+    The resulting mapping must not be persisted or printed: its env values
+    are intentionally included so changing a credential invalidates approval.
+    """
+
+    return {
+        "name": str(config.name),
+        "command": resolve_mcp_command(config.command),
+        "args": [str(argument) for argument in config.args],
+        "env": {
+            str(key): str(value)
+            for key, value in sorted(config.env.items(), key=lambda item: str(item[0]))
+        },
+    }
+
+
+def mcp_config_hash(config: McpServerConfig) -> str:
+    """Hash the complete canonical MCP server configuration."""
+
+    payload = json.dumps(
+        normalize_mcp_config(config),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
 
 
 class McpManager:
@@ -43,7 +94,7 @@ class McpManager:
         from mcp.client.stdio import stdio_client
 
         params = StdioServerParameters(
-            command=config.command,
+            command=config.resolved_command,
             args=list(config.args),
             env=dict(config.env) or None,
         )
@@ -59,6 +110,7 @@ class McpManager:
                     remote_name=remote.name,
                     description=remote.description or "",
                     input_schema=remote.inputSchema,
+                    config_hash=config.config_hash,
                 )
             )
 

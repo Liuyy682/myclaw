@@ -195,6 +195,8 @@ def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
             "Add two numbers",
             {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}},
             lambda a, b: a + b,
+            read_only=True,
+            effect="local_read",
         )
     )
     provider = ToolCallingProvider()
@@ -268,7 +270,7 @@ class LongToolResultProvider:
 
 def test_runner_truncates_tool_result_before_model_call_and_generated_messages():
     registry = ToolRegistry()
-    registry.register(FunctionTool("long", "Long result", {"type": "object"}, lambda: "abcdef"))
+    registry.register(FunctionTool("long", "Long result", {"type": "object"}, lambda: "abcdef", read_only=True, effect="local_read"))
     provider = LongToolResultProvider()
     runner = AgentRunner(provider)
 
@@ -310,8 +312,8 @@ class MultipleToolCallProvider:
 
 def test_runner_executes_multiple_tool_calls_before_follow_up_model_call():
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
-    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2, read_only=True, effect="local_read"))
     provider = MultipleToolCallProvider()
     runner = AgentRunner(provider)
 
@@ -328,8 +330,8 @@ def test_runner_executes_multiple_tool_calls_before_follow_up_model_call():
 
 def test_runner_emits_tool_progress_checkpoints():
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
-    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2, read_only=True, effect="local_read"))
     provider = MultipleToolCallProvider()
     runner = AgentRunner(provider)
     checkpoints = []
@@ -360,8 +362,8 @@ def test_runner_emits_tool_progress_checkpoints():
 
 def test_runner_emits_tool_progress_callbacks_around_each_tool_call():
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
-    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
+    registry.register(FunctionTool("double", "Double", {"type": "object"}, lambda value: value * 2, read_only=True, effect="local_read"))
     provider = MultipleToolCallProvider()
     runner = AgentRunner(provider)
     progress = []
@@ -409,7 +411,7 @@ class NeverFinalToolProvider:
 
 def test_runner_stops_tool_loop_at_max_iterations():
     registry = ToolRegistry()
-    registry.register(FunctionTool("noop", "No-op", {"type": "object"}, lambda: "ok"))
+    registry.register(FunctionTool("noop", "No-op", {"type": "object"}, lambda: "ok", read_only=True, effect="local_read"))
     provider = NeverFinalToolProvider()
     runner = AgentRunner(provider)
 

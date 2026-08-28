@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,9 @@ from myclaw.tools import (
     TaskListTool,
     TaskUpdateTool,
     ToolRegistry,
+    SecurityStore,
 )
+from myclaw.tools.base import ToolRuntimeContext
 
 
 class FixturePathError(ValueError):
@@ -71,6 +74,7 @@ class EvalToolRegistry:
         self,
         registry: ToolRegistry,
         *,
+        fixture_root: Path,
         cancel_on_tool_call: int | None = None,
         fault_phase: str = "before",
     ) -> None:
@@ -79,6 +83,7 @@ class EvalToolRegistry:
         if fault_phase not in {"before", "after"}:
             raise ValueError("fault_phase must be 'before' or 'after'")
         self._registry = registry
+        self._fixture_root = fixture_root.resolve()
         self.cancel_on_tool_call = cancel_on_tool_call
         self.fault_phase = fault_phase
         self.call_count = 0
@@ -114,10 +119,20 @@ class EvalToolRegistry:
             raise asyncio.CancelledError(
                 f"eval fault: cancelled before tool call {self.call_count}"
             )
+        base_context = context or ToolRuntimeContext()
+        scoped_context = replace(
+            base_context,
+            workspace=self._fixture_root,
+            subject=base_context.subject or "internal:eval",
+            security_subject=base_context.security_subject or "internal:eval",
+            approval_callback=lambda *_: "allow",
+            allowed_tools=self.tool_names,
+            resource_scopes=[str(self._fixture_root)],
+        )
         result = await self._registry.execute(
             request,
             max_result_chars=max_result_chars,
-            context=context,
+            context=scoped_context,
         )
         if should_inject and self.fault_phase == "after":
             self.injected = True
@@ -193,7 +208,8 @@ def build_fixture_registry(
                 break
         return names
 
-    registry = ToolRegistry()
+    state_root = Path(workspace or root).expanduser().resolve()
+    registry = ToolRegistry(SecurityStore(state_root))
     registry.register(
         FunctionTool(
             name="read_file",
@@ -209,6 +225,7 @@ def build_fixture_registry(
             },
             func=read_file,
             read_only=True,
+            effect="local_read",
         )
     )
     registry.register(
@@ -225,6 +242,7 @@ def build_fixture_registry(
                 "additionalProperties": False,
             },
             func=write_file,
+            effect="local_write",
         )
     )
     registry.register(
@@ -241,6 +259,7 @@ def build_fixture_registry(
                 "additionalProperties": False,
             },
             func=append_file,
+            effect="local_write",
         )
     )
     registry.register(
@@ -258,9 +277,9 @@ def build_fixture_registry(
             },
             func=list_dir,
             read_only=True,
+            effect="local_read",
         )
     )
-    state_root = Path(workspace or root).expanduser().resolve()
     task_store = TaskStore(state_root)
     cron_store = CronStore(state_root)
     registry.register(AskUserTool())
@@ -276,6 +295,7 @@ def build_fixture_registry(
         registry.unregister(str(name))
     return EvalToolRegistry(
         registry,
+        fixture_root=root,
         cancel_on_tool_call=cancel_on_tool_call,
         fault_phase=fault_phase,
     )

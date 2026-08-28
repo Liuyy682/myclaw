@@ -50,6 +50,8 @@ def test_function_tool_exposes_openai_schema():
 class CastingTool:
     name = "double"
     description = "Double a positive integer"
+    read_only = True
+    effect = "local_read"
     parameters = {
         "type": "object",
         "properties": {"count": {"type": "integer"}},
@@ -85,6 +87,8 @@ def test_registry_casts_and_validates_tool_arguments_before_execute():
 class ContextTool:
     name = "context"
     description = "Read runtime context"
+    read_only = True
+    effect = "local_read"
     parameters = {"type": "object", "properties": {}}
 
     async def execute(self):
@@ -125,6 +129,8 @@ def test_registry_executes_sync_and_async_function_tools():
             "Add two numbers",
             {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}},
             lambda a, b: a + b,
+            read_only=True,
+            effect="local_read",
         )
     )
 
@@ -137,6 +143,8 @@ def test_registry_executes_sync_and_async_function_tools():
             "Uppercase text",
             {"type": "object", "properties": {"text": {"type": "string"}}},
             shout,
+            read_only=True,
+            effect="local_read",
         )
     )
 
@@ -153,7 +161,12 @@ def test_registry_executes_sync_and_async_function_tools():
 
 def test_registry_truncates_normalized_string_tool_results():
     registry = ToolRegistry()
-    registry.register(FunctionTool("long", "Long result", {"type": "object"}, lambda: "abcdef"))
+    registry.register(
+        FunctionTool(
+            "long", "Long result", {"type": "object"}, lambda: "abcdef",
+            read_only=True, effect="local_read",
+        )
+    )
 
     result = asyncio.run(
         registry.execute(ToolCallRequest(id="call_long", name="long", arguments={}), max_result_chars=3)
@@ -164,7 +177,12 @@ def test_registry_truncates_normalized_string_tool_results():
 
 def test_registry_truncates_normalized_json_tool_results():
     registry = ToolRegistry()
-    registry.register(FunctionTool("json", "JSON result", {"type": "object"}, lambda: {"value": "abcdef"}))
+    registry.register(
+        FunctionTool(
+            "json", "JSON result", {"type": "object"}, lambda: {"value": "abcdef"},
+            read_only=True, effect="local_read",
+        )
+    )
 
     result = asyncio.run(
         registry.execute(ToolCallRequest(id="call_json", name="json", arguments={}), max_result_chars=10)
@@ -175,7 +193,12 @@ def test_registry_truncates_normalized_json_tool_results():
 
 def test_registry_returns_readable_errors_for_unknown_tools_bad_arguments_and_exceptions():
     registry = ToolRegistry()
-    registry.register(FunctionTool("boom", "Raise", {"type": "object"}, lambda: (_ for _ in ()).throw(ValueError("bad"))))
+    registry.register(
+        FunctionTool(
+            "boom", "Raise", {"type": "object"}, lambda: (_ for _ in ()).throw(ValueError("bad")),
+            read_only=True, effect="local_read",
+        )
+    )
 
     missing = asyncio.run(
         registry.execute(ToolCallRequest(id="call_missing", name="missing", arguments={}))

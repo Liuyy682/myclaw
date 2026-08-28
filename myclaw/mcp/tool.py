@@ -14,6 +14,31 @@ class McpServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def resolved_command(self) -> str:
+        """Return the command identity used for approval and process launch."""
+
+        # Import lazily to keep this small data object independent of the
+        # client implementation while still giving callers one canonical
+        # command representation.
+        from myclaw.mcp.client import resolve_mcp_command
+
+        return resolve_mcp_command(self.command)
+
+    @property
+    def config_hash(self) -> str:
+        """Return the approval identity for this complete server config."""
+
+        from myclaw.mcp.client import mcp_config_hash
+
+        return mcp_config_hash(self)
+
+    @property
+    def env_keys(self) -> tuple[str, ...]:
+        """Return env names without exposing their values to callers."""
+
+        return tuple(sorted(str(key) for key in self.env))
+
 
 def mcp_tool_name(server: str, tool: str) -> str:
     """Namespaced tool name to avoid collisions across servers."""
@@ -23,8 +48,11 @@ def mcp_tool_name(server: str, tool: str) -> str:
 class McpTool:
     """Adapt a remote MCP tool to the local Tool protocol."""
 
+    # MCP tools execute code outside this process and are therefore always
+    # treated as externally side-effecting by the registry policy gate.
     read_only = False
     exclusive = False
+    effect = "external_side_effect"
 
     def __init__(
         self,
@@ -33,9 +61,11 @@ class McpTool:
         remote_name: str,
         description: str,
         input_schema: dict[str, Any] | None,
+        config_hash: str | None = None,
     ) -> None:
         self._session = session
         self._server_name = server_name
+        self._config_hash = config_hash
         self._remote_name = remote_name
         self._description = description or f"MCP tool {remote_name} from {server_name}"
         self._parameters = input_schema or {"type": "object", "properties": {}}
@@ -52,6 +82,14 @@ class McpTool:
     @property
     def parameters(self) -> dict[str, Any]:
         return self._parameters
+
+    @property
+    def server_name(self) -> str:
+        return self._server_name
+
+    @property
+    def config_hash(self) -> str | None:
+        return self._config_hash
 
     async def execute(self, **kwargs: Any) -> str:
         result = await self._session.call_tool(self._remote_name, kwargs)

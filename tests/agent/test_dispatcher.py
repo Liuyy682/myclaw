@@ -742,7 +742,7 @@ class OneToolProvider:
 
 def test_dispatcher_forwards_tool_progress_as_non_terminal_outbound_messages(tmp_path):
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
     bus = MessageBus()
     loop = AgentLoop(
         OneToolProvider(),

@@ -8,6 +8,9 @@ from myclaw.tools.models import MemoryWriteInput
 
 
 class MemoryWriteTool(Tool):
+    read_only = False
+    exclusive = True
+    effect = "local_write"
     input_model = MemoryWriteInput
 
     def __init__(self, store: MemoryStore) -> None:

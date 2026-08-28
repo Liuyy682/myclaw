@@ -116,6 +116,8 @@ def test_tool_input_model_has_shared_runtime_config_and_number_to_string_coercio
             {"type": "object", "properties": {"cmd": {"type": "string"}}},
             lambda **kwargs: kwargs,
             input_model=ExecInput,
+            read_only=True,
+            effect="local_read",
         )
     )
 
@@ -143,6 +145,8 @@ def test_registry_runs_cast_model_dump_validate_and_execute_in_order():
     class OrderedTool:
         name = "ordered"
         description = "Check preparation order"
+        read_only = True
+        effect = "local_read"
         parameters = {"type": "object", "properties": {"value": {"type": "integer"}}}
         input_model = OrderedInput
 

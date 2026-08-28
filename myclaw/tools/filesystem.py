@@ -42,7 +42,13 @@ def build_default_tool_registry(
     state_root = Path(state_workspace).expanduser() if state_workspace is not None else memory_root
     task_store = TaskStore(state_root)
     cron_store = CronStore(state_root)
-    registry = ToolRegistry()
+    # Keep approvals, operation replay guards, and audit metadata in the
+    # workspace security database so all built-in tools (including Dream and
+    # sub-agents) share one durable security boundary.
+    registry = ToolRegistry(
+        security_path=state_root / "security" / "tool_security.db",
+        workspace=state_root,
+    )
     registry.register(AskUserTool())
     registry.register(CronTool(cron_store))
     registry.register(EditFileTool(root))
@@ -88,6 +94,13 @@ def _is_blocked_device(path: str | Path) -> bool:
 
 
 class _FilesystemTool(Tool):
+    # Built-in filesystem tools are deliberately classified at the tool
+    # boundary.  Concrete write tools override these defaults below so a
+    # registry can enforce policy without inspecting implementation details.
+    read_only = True
+    exclusive = False
+    effect = "local_read"
+
     def __init__(self, workspace: Path | str | None = None) -> None:
         self._workspace = Path(workspace).expanduser().resolve() if workspace is not None else Path.cwd().resolve()
 
@@ -137,6 +150,9 @@ class _FilesystemTool(Tool):
 
 
 class ReadFileTool(_FilesystemTool):
+    read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = ReadFileInput
 
     @property
@@ -194,6 +210,9 @@ class ReadFileTool(_FilesystemTool):
 
 
 class ListDirTool(_FilesystemTool):
+    read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = ListDirInput
 
     @property
@@ -268,6 +287,9 @@ class ListDirTool(_FilesystemTool):
 
 
 class EditFileTool(_FilesystemTool):
+    read_only = False
+    exclusive = True
+    effect = "local_write"
     input_model = EditFileInput
 
     @property
@@ -332,6 +354,9 @@ class EditFileTool(_FilesystemTool):
 
 
 class GrepTool(_FilesystemTool):
+    read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = GrepInput
 
     @property
@@ -412,6 +437,9 @@ class GrepTool(_FilesystemTool):
 
 
 class GlobTool(_FilesystemTool):
+    read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = GlobInput
 
     @property
@@ -488,6 +516,9 @@ class GlobTool(_FilesystemTool):
 
 
 class WriteFileTool(_FilesystemTool):
+    read_only = False
+    exclusive = True
+    effect = "local_write"
     input_model = WriteFileInput
 
     @property

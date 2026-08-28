@@ -10,6 +10,7 @@ from myclaw.tools.models import NotebookEditInput
 class NotebookEditTool(_FilesystemTool):
     read_only = False
     exclusive = True
+    effect = "local_write"
     input_model = NotebookEditInput
 
     @property

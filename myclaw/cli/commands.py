@@ -511,7 +511,103 @@ def _session_label(dispatcher: AgentDispatcher, session_name: str) -> str:
     return title if isinstance(title, str) and title.strip() else session_name
 
 
+def _mcp_security_store(workspace: Path) -> Any:
+    """Open the workspace-scoped MCP approval database."""
+
+    from myclaw.tools.security import SecurityStore
+
+    db_path = workspace / "security" / "tool_security.db"
+    try:
+        return SecurityStore(path=db_path)
+    except TypeError:
+        # Compatibility for a minimal adapter whose only constructor argument
+        # is the database path.
+        return SecurityStore(db_path)
+
+
+def _mcp_approval_is_current(status: object) -> bool:
+    if isinstance(status, bool):
+        return status
+    if isinstance(status, dict):
+        return bool(status.get("approved", status.get("status") == "approved"))
+    approved = getattr(status, "approved", None)
+    return bool(approved if approved is not None else getattr(status, "status", "") == "approved")
+
+
+def _mcp_configs(workspace: Path) -> dict[str, Any]:
+    from myclaw.mcp import load_mcp_configs
+
+    return {config.name: config for config in load_mcp_configs(workspace)}
+
+
+def run_mcp_command(argv: list[str]) -> None:
+    """Run the local, explicit MCP approval commands.
+
+    This intentionally stays a small argv dispatcher alongside the existing
+    ``gateway`` branch rather than changing the main assistant parser.
+    """
+
+    if not argv or argv[0] not in {"status", "approve", "revoke"}:
+        print("Usage: myclaw mcp status [server] | approve <server> | revoke <server>", file=sys.stderr)
+        raise SystemExit(2)
+
+    action = argv[0]
+    server_name = argv[1] if len(argv) > 1 else None
+    if len(argv) > 2 or (action in {"approve", "revoke"} and not server_name):
+        print("Usage: myclaw mcp status [server] | approve <server> | revoke <server>", file=sys.stderr)
+        raise SystemExit(2)
+
+    load_env_file()
+    workspace = SessionManager().workspace
+    try:
+        security_store = _mcp_security_store(workspace)
+    except Exception as exc:
+        print(f"Error: could not open MCP security store: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+    configs = _mcp_configs(workspace)
+    if action == "status":
+        selected = [configs[server_name]] if server_name is not None and server_name in configs else list(configs.values())
+        if server_name is not None and server_name not in configs:
+            print(f"Error: MCP server '{server_name}' is not configured.", file=sys.stderr)
+            raise SystemExit(1)
+        if not selected:
+            print("No MCP servers configured.")
+            return
+        print("server\thash\tapproved")
+        for config in selected:
+            try:
+                approved = _mcp_approval_is_current(
+                    security_store.mcp_status(config.name, config.config_hash),
+                )
+            except Exception:
+                approved = False
+            # Only the short hash is displayed.  The config's env values are
+            # never included in CLI output.
+            print(f"{config.name}\t{config.config_hash[:12]}\t{'true' if approved else 'false'}")
+        return
+
+    if action == "approve":
+        assert server_name is not None
+        config = configs.get(server_name)
+        if config is None:
+            print(f"Error: MCP server '{server_name}' is not configured.", file=sys.stderr)
+            raise SystemExit(1)
+        security_store.approve_mcp(config.name, config.config_hash, list(config.env_keys))
+        print(f"Approved MCP server '{config.name}' ({config.config_hash[:12]}).")
+        return
+
+    assert action == "revoke"
+    assert server_name is not None
+    security_store.revoke_mcp(server_name)
+    print(f"Revoked MCP server '{server_name}'.")
+
+
 async def async_main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        run_mcp_command(sys.argv[2:])
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "gateway":
         parser = argparse.ArgumentParser(description="Run the myclaw HTTP gateway.")
         parser.add_argument("--host", default=DEFAULT_GATEWAY_HOST, help="Host to bind.")

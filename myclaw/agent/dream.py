@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message
@@ -15,6 +16,7 @@ from myclaw.session import SessionManager
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import ToolRuntimeContext
 from myclaw.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
+from myclaw.tools.security import PolicyGate
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, current_trace_context
 
 logger = logging.getLogger(__name__)
@@ -112,6 +114,7 @@ class DreamManager:
         *,
         model: str,
         observability: ObservabilityRuntime | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.session_manager = session_manager
         self.provider = provider
@@ -122,6 +125,7 @@ class DreamManager:
             session_manager.workspace, ObservabilityConfig(enabled=False)
         )
         self.runner = AgentRunner(provider)
+        self.tool_registry = tool_registry
         self.memory_dir = memory_store.memory_dir
         self.git = MemoryGit(self.memory_dir)
         self.cursor_path = self.memory_dir / ".dream_cursor"
@@ -222,7 +226,7 @@ class DreamManager:
         return self._response_text(response)
 
     async def _phase2_apply(self, checklist: str) -> None:
-        registry = ToolRegistry()
+        registry = self._dream_registry()
         registry.register(ReadFileTool(self.memory_dir))
         registry.register(EditFileTool(self.memory_dir))
         registry.register(WriteFileTool(self.memory_dir))
@@ -238,14 +242,52 @@ class DreamManager:
                 max_iterations=_PHASE2_MAX_ITERATIONS,
                 tools=registry,
                 max_tool_result_chars=self.config.max_tool_result_chars,
-                tool_context=ToolRuntimeContext(
-                    session_key="dream",
-                    channel="dream",
+                tool_context=_dream_runtime_context(
+                    registry,
                     workspace=self.memory_dir,
-                    tool_names=sorted(registry.tool_names),
+                    memory_dir=self.memory_dir,
                 ),
             )
         )
+
+    def _dream_registry(self) -> ToolRegistry:
+        """Build the narrowly scoped registry used by Dream phase 2.
+
+        The parent registry is only a source of the workspace security
+        components.  No parent tools are copied: Dream can read/edit/write
+        files inside the memory directory and nothing else.
+        """
+
+        parent_store = _registry_security_value(self.tool_registry, "security_store")
+        if parent_store is None:
+            parent_store = _open_workspace_security_store(self.session_manager.workspace)
+        parent_policy = _registry_security_value(self.tool_registry, "policy_gate")
+        if parent_policy is None and parent_store is not None:
+            # Dream is a deliberately scoped internal operation.  The
+            # callback is attached only to the dedicated registry, while the
+            # shared store records each approval/audit event durably.
+            parent_policy = PolicyGate(parent_store, approval_callback=_dream_approval)
+        constructor_values = {
+            "security_store": parent_store,
+            "policy_gate": parent_policy,
+            "tool_timeout_seconds": _registry_security_value(self.tool_registry, "tool_timeout_seconds"),
+            "max_result_chars": _registry_security_value(self.tool_registry, "max_result_chars"),
+        }
+        try:
+            registry = ToolRegistry(**constructor_values)
+        except TypeError:
+            registry = ToolRegistry()
+        _copy_security_components(self.tool_registry, registry)
+        if _registry_security_value(registry, "security_store") is None and parent_store is not None:
+            _set_if_possible(registry, "security_store", parent_store)
+        if _registry_security_value(registry, "policy_gate") is None and parent_policy is not None:
+            _set_if_possible(registry, "policy_gate", parent_policy)
+        # These hints are consumed by the scoped registry/security adapter when
+        # present.  They are harmless attributes for the current registry.
+        _set_if_possible(registry, "subject", "internal:dream")
+        _set_if_possible(registry, "resource_scopes", [str(self.memory_dir.resolve())])
+        _set_if_possible(registry, "allowed_tools", ["read_file", "edit_file", "write_file"])
+        return registry
 
     def _validate_checklist(self, checklist: str, valid_source_ids: set[int]) -> str:
         if checklist.strip().lower() == "(nothing)":
@@ -374,3 +416,117 @@ class DreamManager:
             return datetime.fromisoformat(value)
         except ValueError:
             return None
+
+
+def _dream_runtime_context(
+    registry: ToolRegistry,
+    *,
+    workspace: Path,
+    memory_dir: Path,
+) -> ToolRuntimeContext:
+    resource_scopes = [str(memory_dir.resolve())]
+    values: dict[str, Any] = {
+        "session_key": "dream",
+        "channel": "dream",
+        "chat_id": "dream",
+        "metadata": {
+            "subject": "internal:dream",
+            "security_subject": "internal:dream",
+            "resource_scopes": list(resource_scopes),
+            "allowed_tools": ["read_file", "edit_file", "write_file"],
+        },
+        "workspace": workspace,
+        "tool_names": ["read_file", "edit_file", "write_file"],
+        "allowed_tools": ["read_file", "edit_file", "write_file"],
+        "resource_scopes": resource_scopes,
+        "subject": "internal:dream",
+        "security_subject": "internal:dream",
+        "approval": _dream_approval,
+        "approval_callback": _dream_approval,
+    }
+    fields = _runtime_context_fields()
+    return ToolRuntimeContext(**{key: value for key, value in values.items() if key in fields})
+
+
+def _runtime_context_fields() -> set[str]:
+    fields = getattr(ToolRuntimeContext, "__dataclass_fields__", None)
+    if isinstance(fields, dict):
+        return set(fields)
+    return {
+        "session_key",
+        "channel",
+        "chat_id",
+        "metadata",
+        "workspace",
+        "tool_names",
+        "spawn",
+        "ask",
+    }
+
+
+def _registry_security_value(registry: Any, field: str) -> Any:
+    if registry is None:
+        return None
+    value = getattr(registry, field, None)
+    if value is not None:
+        return value
+    return getattr(registry, f"_{field}", None)
+
+
+def _set_if_possible(target: Any, field: str, value: Any) -> None:
+    try:
+        setattr(target, field, value)
+    except (AttributeError, TypeError):
+        return
+
+
+def _copy_security_components(parent: Any, child: Any) -> None:
+    if parent is None:
+        return
+    for field in (
+        "security",
+        "security_store",
+        "policy_gate",
+        "approval",
+        "approval_store",
+        "approval_manager",
+        "ask",
+        "subject",
+    ):
+        value = _registry_security_value(parent, field)
+        if value is not None:
+            _set_if_possible(child, field, value)
+
+
+def _open_workspace_security_store(workspace: Path) -> Any:
+    """Best-effort construction for runtimes that provide SecurityStore.
+
+    Keeping this adapter optional lets Dream retain its existing standalone
+    testability while using the same workspace database when the security
+    component is installed by the host agent.
+    """
+
+    try:
+        from myclaw.tools.security import SecurityStore
+    except (ImportError, AttributeError):
+        return None
+    db_path = workspace / "security" / "tool_security.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    constructors = (
+        lambda: SecurityStore(db_path),
+        lambda: SecurityStore(path=db_path),
+        lambda: SecurityStore(db_path=str(db_path)),
+        lambda: SecurityStore(database_path=db_path),
+    )
+    for constructor in constructors:
+        try:
+            return constructor()
+        except (TypeError, ValueError, OSError):
+            continue
+    return None
+
+
+def _dream_approval(_question: str, _choices: list[str] | None = None) -> str:
+    """Scoped preauthorization callback for Dream's dedicated registry."""
+
+    return "allow"

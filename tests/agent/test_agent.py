@@ -345,7 +345,7 @@ class ToolLoopProvider:
 def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     manager = SessionManager(tmp_path)
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
     provider = ToolLoopProvider()
     loop = AgentLoop(
         provider,
@@ -435,7 +435,7 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
 def test_run_writes_full_transcript_including_tool_calls(tmp_path):
     manager = SessionManager(tmp_path)
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
     loop = AgentLoop(
         ToolLoopProvider(),
         AgentConfig(system_prompt=""),
@@ -523,7 +523,7 @@ def test_run_passes_runtime_context_to_tool_calls(tmp_path):
         }
 
     registry = ToolRegistry()
-    registry.register(FunctionTool("context", "Context", {"type": "object"}, context_tool))
+    registry.register(FunctionTool("context", "Context", {"type": "object"}, context_tool, read_only=True, effect="local_read"))
     loop = AgentLoop(
         ContextToolProvider(),
         AgentConfig(system_prompt=""),
@@ -550,7 +550,7 @@ def test_run_passes_runtime_context_to_tool_calls(tmp_path):
 def test_run_forwards_tool_progress_without_persisting_progress_events(tmp_path):
     manager = SessionManager(tmp_path)
     registry = ToolRegistry()
-    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b))
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
     provider = ToolLoopProvider()
     loop = AgentLoop(
         provider,
@@ -601,8 +601,8 @@ async def _cancelled_tool():
 
 def test_run_restores_runtime_checkpoint_with_pending_tool_result(tmp_path):
     registry = ToolRegistry()
-    registry.register(FunctionTool("first", "First", {"type": "object"}, lambda: "first ok"))
-    registry.register(FunctionTool("second", "Second", {"type": "object"}, _cancelled_tool))
+    registry.register(FunctionTool("first", "First", {"type": "object"}, lambda: "first ok", read_only=True, effect="local_read"))
+    registry.register(FunctionTool("second", "Second", {"type": "object"}, _cancelled_tool, read_only=True, effect="local_read"))
     manager = SessionManager(tmp_path)
     interrupted_loop = AgentLoop(
         PartialToolProvider(),
@@ -816,7 +816,10 @@ def test_remember_tool_persists_memory_for_later_turns(tmp_path):
         tool_registry=build_default_tool_registry(tmp_path / "files", memory_workspace=manager.workspace),
     )
 
-    asyncio.run(loop.run("remember my preference", session_key=SESSION_KEY))
+    async def approve(_question, _choices):
+        return "allow"
+
+    asyncio.run(loop.run("remember my preference", session_key=SESSION_KEY, ask_callback=approve))
     asyncio.run(loop.run("use my preference", session_key=SESSION_KEY))
 
     memory_path = manager.workspace / "memory" / "MEMORY.md"

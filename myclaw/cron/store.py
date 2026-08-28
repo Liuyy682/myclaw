@@ -25,6 +25,8 @@ class CronStore:
         next_run_at: datetime | str | None = None,
         session_key: str | None = None,
         enabled: bool = True,
+        allowed_tools: list[str] | None = None,
+        resource_scopes: dict[str, Any] | list[str] | None = None,
     ) -> dict[str, Any]:
         if not name.strip():
             raise ValueError("name is required")
@@ -52,6 +54,8 @@ class CronStore:
             "next_run_at": self._isoformat(next_run_at),
             "session_key": session_key,
             "enabled": bool(enabled),
+            "allowed_tools": _normalize_scope_values(allowed_tools),
+            "resource_scopes": _normalize_scope_values(resource_scopes),
             "created_at": now,
             "updated_at": now,
         }
@@ -135,3 +139,11 @@ class CronStore:
             return datetime.fromisoformat(value)
         except ValueError:
             return None
+
+
+def _normalize_scope_values(values: dict[str, Any] | list[str] | None) -> dict[str, Any] | list[str] | None:
+    if values is None:
+        return None
+    if isinstance(values, dict):
+        return {str(key): value for key, value in values.items() if str(key).strip()}
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))

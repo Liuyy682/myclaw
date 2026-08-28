@@ -36,6 +36,11 @@ class CronInput(ToolInputModel):
     at: str | None = None
     cron: str | None = None
     session_key: str | None = None
+    # A scheduled run carries an explicit least-privilege tool/resource
+    # scope.  ``None`` is kept distinct from an empty list so old jobs can be
+    # recognised and downgraded by the dispatcher.
+    allowed_tools: list[str] | None = None
+    resource_scopes: dict[str, Any] | list[str] | None = None
 
 
 class EditFileInput(ToolInputModel):

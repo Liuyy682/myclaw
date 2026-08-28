@@ -10,12 +10,16 @@ from myclaw.tools.models import TaskCreateInput, TaskGetInput, TaskListInput, Ta
 class _TaskTool(Tool):
     read_only = False
     exclusive = False
+    effect = "local_write"
 
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
 
 class TaskCreateTool(_TaskTool):
+    read_only = False
+    exclusive = False
+    effect = "local_write"
     input_model = TaskCreateInput
 
     @property
@@ -68,6 +72,8 @@ class TaskCreateTool(_TaskTool):
 
 class TaskListTool(_TaskTool):
     read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = TaskListInput
 
     @property
@@ -96,6 +102,8 @@ class TaskListTool(_TaskTool):
 
 class TaskGetTool(_TaskTool):
     read_only = True
+    exclusive = False
+    effect = "local_read"
     input_model = TaskGetInput
 
     @property
@@ -124,6 +132,9 @@ class TaskGetTool(_TaskTool):
 
 
 class TaskUpdateTool(_TaskTool):
+    read_only = False
+    exclusive = True
+    effect = "local_write"
     input_model = TaskUpdateInput
 
     @property

@@ -9,7 +9,7 @@ from myclaw.agent import AgentConfig, AgentLoop, AgentRunSpec, AgentRunner
 from myclaw.agent.context import TokenEstimator
 from myclaw.providers import FakeProvider, LLMResponse
 from myclaw.session import SessionManager
-from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry, build_default_tool_registry
+from myclaw.tools import FunctionTool, ToolCallRequest, ToolRegistry, ToolRuntimeContext, build_default_tool_registry
 
 
 @pytest.fixture(autouse=True)
@@ -47,11 +47,15 @@ def _tool_response(call_id: str, name: str, arguments: dict) -> LLMResponse:
 
 
 def _run_runner(provider, registry, *, max_iterations=5):
+    async def approve(_question, _choices):
+        return "allow"
+
     return asyncio.run(AgentRunner(provider).run(AgentRunSpec(
         messages=[{"role": "user", "content": "complete the eval task"}],
         model=provider.model,
         max_iterations=max_iterations,
         tools=registry,
+        tool_context=ToolRuntimeContext(session_key="eval:runner", ask=approve),
     )))
 
 
@@ -72,6 +76,8 @@ def test_eval_missing_argument_can_be_corrected_without_duplicate_side_effect():
     registry.register(FunctionTool(
         "record", "Record a value", {"type": "object"},
         lambda value: executions.append(value) or "recorded",
+        read_only=True,
+        effect="local_read",
         input_model=_RequiredValue,
     ))
     provider = _ScriptedProvider([
@@ -89,7 +95,7 @@ def test_eval_missing_argument_can_be_corrected_without_duplicate_side_effect():
 
 def test_eval_unknown_tool_can_be_replaced_by_available_tool():
     registry = ToolRegistry()
-    registry.register(FunctionTool("known", "Known tool", {"type": "object"}, lambda: "ok"))
+    registry.register(FunctionTool("known", "Known tool", {"type": "object"}, lambda: "ok", read_only=True, effect="local_read"))
     provider = _ScriptedProvider([
         _tool_response("missing", "unknown", {}),
         _tool_response("known", "known", {}),
@@ -106,10 +112,12 @@ def test_eval_unknown_tool_can_be_replaced_by_available_tool():
 def test_eval_execution_error_can_be_corrected_with_alternative_tool():
     executions = []
     registry = ToolRegistry()
-    registry.register(FunctionTool("primary", "Primary", {"type": "object"}, lambda: 1 / 0))
+    registry.register(FunctionTool("primary", "Primary", {"type": "object"}, lambda: 1 / 0, read_only=True, effect="local_read"))
     registry.register(FunctionTool(
         "fallback", "Fallback", {"type": "object"},
         lambda: executions.append("fallback") or "ok",
+        read_only=True,
+        effect="local_read",
     ))
     provider = _ScriptedProvider([
         _tool_response("primary", "primary", {}),
@@ -188,8 +196,8 @@ async def _cancelled():
 
 def _interrupted_workspace(workspace, effects):
     registry = ToolRegistry()
-    registry.register(FunctionTool("first", "First", {"type": "object"}, lambda: effects.append("first") or "ok"))
-    registry.register(FunctionTool("second", "Second", {"type": "object"}, _cancelled))
+    registry.register(FunctionTool("first", "First", {"type": "object"}, lambda: effects.append("first") or "ok", read_only=True, effect="local_read"))
+    registry.register(FunctionTool("second", "Second", {"type": "object"}, _cancelled, read_only=True, effect="local_read"))
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(_loop(_CancelProvider(), workspace, registry).run("start", session_key="eval:recovery"))
 
@@ -230,7 +238,7 @@ def test_eval_recovery_clears_runtime_checkpoint_after_next_turn(tmp_path):
 def test_eval_unknown_forbidden_tool_has_no_side_effect():
     effects = []
     registry = ToolRegistry()
-    registry.register(FunctionTool("safe", "Safe", {"type": "object"}, lambda: effects.append("safe")))
+    registry.register(FunctionTool("safe", "Safe", {"type": "object"}, lambda: effects.append("safe"), read_only=True, effect="local_read"))
     provider = _ScriptedProvider([_tool_response("forbidden", "delete_everything", {}), LLMResponse(content="refused")])
 
     result = _run_runner(provider, registry)

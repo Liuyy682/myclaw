@@ -9,6 +9,7 @@ from myclaw.tools.models import SpawnInput
 class SpawnTool(Tool):
     read_only = False
     exclusive = False
+    effect = "spawn"
     input_model = SpawnInput
 
     @property

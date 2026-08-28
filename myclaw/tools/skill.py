@@ -10,6 +10,7 @@ from myclaw.tools.models import SkillLoadInput
 class SkillLoadTool(Tool):
     read_only = True
     exclusive = False
+    effect = "local_read"
     input_model = SkillLoadInput
 
     def __init__(self, catalog: SkillCatalog) -> None:

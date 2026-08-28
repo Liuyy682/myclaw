@@ -16,6 +16,19 @@ from myclaw.tools.memory import MemoryWriteTool
 from myclaw.tools.notebook import NotebookEditTool
 from myclaw.tools.recall import RecallTool
 from myclaw.tools.registry import ToolRegistry
+from myclaw.tools.security import (
+    ALLOW,
+    ASK,
+    DENY,
+    PolicyDecision,
+    PolicyGate,
+    ResultEnvelope,
+    SecurityStore,
+    canonical_args,
+    canonical_args_hash,
+    make_operation_id,
+    operation_id,
+)
 from myclaw.tools.self import MyTool
 from myclaw.tools.shell import ExecTool
 from myclaw.tools.skill import SkillLoadTool
@@ -48,10 +61,21 @@ __all__ = [
     "ToolCallRequest",
     "ToolRegistry",
     "ToolRuntimeContext",
+    "PolicyDecision",
+    "PolicyGate",
+    "ResultEnvelope",
+    "SecurityStore",
+    "ALLOW",
+    "ASK",
+    "DENY",
     "WebFetchTool",
     "WebSearchTool",
     "WriteFileTool",
     "build_default_tool_registry",
     "get_current_tool_context",
+    "canonical_args",
+    "canonical_args_hash",
+    "make_operation_id",
+    "operation_id",
     "tool_context",
 ]

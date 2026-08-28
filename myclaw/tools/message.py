@@ -9,6 +9,7 @@ from myclaw.tools.models import MessageInput
 class MessageTool(Tool):
     read_only = False
     exclusive = False
+    effect = "message"
     input_model = MessageInput
 
     @property

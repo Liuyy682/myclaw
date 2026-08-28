@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import math
 import time
@@ -14,9 +15,21 @@ from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.loop import AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.observability import SpanHandle
+from myclaw.tools.base import ToolRuntimeContext
 
 
 logger = logging.getLogger(__name__)
+
+_CRON_LOCAL_READ_TOOLS = (
+    "read_file",
+    "list_dir",
+    "grep",
+    "glob",
+    "task_list",
+    "task_get",
+    "my",
+    "skill_load",
+)
 
 
 @dataclass(slots=True)
@@ -185,6 +198,15 @@ class AgentDispatcher:
         job_id = str(job.get("id") or "job")
         job_name = str(job.get("name") or job_id)
         metadata = {"cron_job_id": job_id, "cron_job_name": job_name}
+        allowed_tools = _scope_values(job.get("allowed_tools"))
+        resource_scopes = _scope_values(job.get("resource_scopes"))
+        complete_scope = isinstance(allowed_tools, list) and isinstance(resource_scopes, (list, dict))
+        # Keep the old metadata shape for legacy callers while preserving the
+        # explicit scope when a job has one.  The context below always applies
+        # the local-read downgrade when either field is absent.
+        if complete_scope:
+            metadata["allowed_tools"] = allowed_tools
+            metadata["resource_scopes"] = resource_scopes
         trace_id = uuid.uuid4().hex if self.observability.config.enabled else ""
         if trace_id:
             metadata["trace_id"] = trace_id
@@ -195,13 +217,21 @@ class AgentDispatcher:
             trace_id=trace_id or None, attributes={"cron_job_id": job_id, "cron_job_name": job_name},
         ) as trace:
             try:
-                result = await self.loop.run(
-                    str(job.get("prompt") or ""),
-                    session_key=str(job.get("session_key") or f"cron:{job_id}"),
-                    channel="cron",
-                    chat_id=job_id,
-                    metadata=metadata,
-                )
+                run_kwargs: dict[str, Any] = {
+                    "session_key": str(job.get("session_key") or f"cron:{job_id}"),
+                    "channel": "cron",
+                    "chat_id": job_id,
+                    "metadata": metadata,
+                }
+                if _accepts_tool_context(self.loop.run):
+                    run_kwargs["tool_context"] = _cron_runtime_context(
+                        self.loop,
+                        job,
+                        job_id=job_id,
+                        session_key=run_kwargs["session_key"],
+                        metadata=metadata,
+                    )
+                result = await self.loop.run(str(job.get("prompt") or ""), **run_kwargs)
                 content = result.content
                 if getattr(result, "error", None):
                     trace.set_error(result.error, error_type="CronAgentError")
@@ -503,3 +533,85 @@ class AgentDispatcher:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._active_tasks.difference_update(tasks)
         self._active_session_tasks.clear()
+
+
+def _scope_values(value: Any) -> list[str] | dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        return {str(key): item for key, item in value.items() if str(key).strip()}
+    return None
+
+
+def _accepts_tool_context(run_callable: Any) -> bool:
+    try:
+        parameters = inspect.signature(run_callable).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "tool_context" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _runtime_context_fields() -> set[str]:
+    fields = getattr(ToolRuntimeContext, "__dataclass_fields__", None)
+    if isinstance(fields, dict):
+        return set(fields)
+    return {
+        "session_key",
+        "channel",
+        "chat_id",
+        "metadata",
+        "workspace",
+        "tool_names",
+        "spawn",
+        "ask",
+    }
+
+
+def _cron_runtime_context(
+    loop: Any,
+    job: dict[str, Any],
+    *,
+    job_id: str,
+    session_key: str,
+    metadata: dict[str, Any],
+) -> ToolRuntimeContext:
+    raw_allowed_tools = _scope_values(job.get("allowed_tools"))
+    raw_resource_scopes = _scope_values(job.get("resource_scopes"))
+    complete_scope = isinstance(raw_allowed_tools, list) and isinstance(raw_resource_scopes, (list, dict))
+    allowed_tools = raw_allowed_tools if complete_scope else list(_CRON_LOCAL_READ_TOOLS)
+    resource_scopes = raw_resource_scopes if complete_scope else ["workspace"]
+    session_manager = getattr(loop, "session_manager", None)
+    workspace = getattr(session_manager, "workspace", None)
+    if workspace is None:
+        workspace = getattr(getattr(loop, "cron_store", None), "workspace", None)
+    values: dict[str, Any] = {
+        "session_key": session_key,
+        "channel": "cron",
+        "chat_id": job_id,
+        "metadata": dict(metadata),
+        "workspace": workspace,
+        "tool_names": list(allowed_tools),
+        "allowed_tools": list(allowed_tools),
+        "resource_scopes": dict(resource_scopes) if isinstance(resource_scopes, dict) else list(resource_scopes),
+        "subject": "internal:cron",
+        "security_subject": "internal:cron",
+        # Cron runs are non-interactive and cannot recursively spawn agents.
+        "spawn": None,
+        "ask": None,
+    }
+    if complete_scope:
+        values["approval"] = _approve_scoped_cron_call
+        values["approval_callback"] = _approve_scoped_cron_call
+    fields = _runtime_context_fields()
+    return ToolRuntimeContext(**{key: value for key, value in values.items() if key in fields})
+
+
+def _approve_scoped_cron_call(_question: str, _choices: list[str] | None = None) -> str:
+    """Approve only after PolicyGate has enforced the persisted Cron scope."""
+
+    return "allow"

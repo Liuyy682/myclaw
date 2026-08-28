@@ -23,7 +23,19 @@ from myclaw.providers.base import LLMProvider
 from myclaw.session import Session, SessionManager, TranscriptStore
 from myclaw.skills import SkillCatalog
 from myclaw.tools import ToolRegistry
-from myclaw.tools.base import AskCallback, ToolRuntimeContext
+from myclaw.tools.base import AskCallback, ToolRuntimeContext, get_current_tool_context
+
+
+_CRON_LOCAL_READ_TOOLS = (
+    "read_file",
+    "list_dir",
+    "grep",
+    "glob",
+    "task_list",
+    "task_get",
+    "my",
+    "skill_load",
+)
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +106,8 @@ class AgentLoop:
             model=self.config.model or self.provider.model,
             observability=self.observability,
         )
+        self.tool_registry = tool_registry
+        self.skill_catalog = skill_catalog
         self.dream = DreamManager(
             session_manager,
             provider,
@@ -101,9 +115,8 @@ class AgentLoop:
             self.config,
             model=self.config.model or self.provider.model,
             observability=self.observability,
+            tool_registry=self.tool_registry,
         )
-        self.tool_registry = tool_registry
-        self.skill_catalog = skill_catalog
         self.observation_store = None
         self.observation_worker = None
         if self.config.observation_memory_enabled:
@@ -131,6 +144,7 @@ class AgentLoop:
         progress_callback: ProgressCallback | None = None,
         stream_callback: StreamCallback | None = None,
         ask_callback: AskCallback | None = None,
+        tool_context: ToolRuntimeContext | None = None,
     ) -> RunResult:
         user_text = text.strip()
         if not user_text:
@@ -161,6 +175,7 @@ class AgentLoop:
                     progress_callback=progress_callback,
                     stream_callback=stream_callback,
                     ask_callback=ask_callback,
+                    tool_context=tool_context,
                 )
                 if result.error:
                     turn.set_error(result.error, error_type="AgentRunError")
@@ -179,6 +194,7 @@ class AgentLoop:
         progress_callback: ProgressCallback | None,
         stream_callback: StreamCallback | None,
         ask_callback: AskCallback | None,
+        tool_context: ToolRuntimeContext | None,
     ) -> RunResult:
 
         with self.observability.span("context.prepare", "agent") as prepare_span:
@@ -233,14 +249,23 @@ class AgentLoop:
             user_message = self._mark_pending_user_turn(session, user_text, turn_id=turn_id)
             self.transcript.append(session_key, user_message)
 
+        runtime_context = self._tool_runtime_context(
+            session_key,
+            channel,
+            chat_id,
+            metadata,
+            ask_callback,
+            base_context=tool_context,
+        )
+        runtime_registry = self._registry_for_context(runtime_context)
         result = await self.runner.run(
             AgentRunSpec(
                 messages=messages,
                 model=self.config.model or self.provider.model,
                 max_iterations=self.config.max_turns,
-                tools=self.tool_registry,
+                tools=runtime_registry,
                 max_tool_result_chars=self.config.max_tool_result_chars,
-                tool_context=self._tool_runtime_context(session_key, channel, chat_id, metadata, ask_callback),
+                tool_context=runtime_context,
                 checkpoint_callback=lambda payload: self._set_runtime_checkpoint(session, payload),
                 progress_callback=progress_callback,
                 stream_callback=stream_callback,
@@ -268,6 +293,34 @@ class AgentLoop:
             stop_reason=result.stop_reason,
             error=result.error,
         )
+
+    def _registry_for_context(self, context: ToolRuntimeContext) -> ToolRegistry | None:
+        parent = self.tool_registry
+        if parent is None:
+            return None
+        allowed = getattr(context, "allowed_tools", None)
+        if allowed is None:
+            return parent
+        allowed_names = {str(name) for name in allowed}
+        if allowed_names == set(parent.tool_names):
+            return parent
+        constructor_values = {
+            "security_store": _registry_security_value(parent, "security_store"),
+            "policy_gate": _registry_security_value(parent, "policy_gate"),
+            "tool_timeout_seconds": _registry_security_value(parent, "tool_timeout_seconds"),
+            "max_result_chars": _registry_security_value(parent, "max_result_chars"),
+        }
+        try:
+            scoped = ToolRegistry(**constructor_values)
+        except TypeError:
+            scoped = ToolRegistry()
+        for name in parent.tool_names:
+            if name in allowed_names:
+                tool = parent.get(name)
+                if tool is not None:
+                    scoped.register(tool)
+        _copy_registry_security_components(parent, scoped)
+        return scoped
 
     def reset_session(self, session_key: str) -> None:
         self.session_manager.reset(session_key)
@@ -444,15 +497,30 @@ class AgentLoop:
         return rendered or "Observation processing found no durable facts in the covered turns."
 
     def _subagent_registry(self) -> ToolRegistry:
-        sub = ToolRegistry()
         if self.tool_registry is None:
-            return sub
+            return ToolRegistry()
+        parent = self.tool_registry
+        constructor_values = {
+            "security_store": _registry_security_value(parent, "security_store"),
+            "policy_gate": _registry_security_value(parent, "policy_gate"),
+            "tool_timeout_seconds": _registry_security_value(parent, "tool_timeout_seconds"),
+            "max_result_chars": _registry_security_value(parent, "max_result_chars"),
+        }
+        try:
+            sub = ToolRegistry(**constructor_values)
+        except TypeError:
+            sub = ToolRegistry()
         for name in self.tool_registry.tool_names:
             if name in {"spawn", "ask_user"}:
                 continue
             tool = self.tool_registry.get(name)
             if tool is not None:
                 sub.register(tool)
+        # Security/approval state belongs to the parent workspace and must be
+        # shared by the child registry.  Do not share an allow-all decision:
+        # the child receives its own subject in _spawn_subagent below, so each
+        # side-effecting call is evaluated independently.
+        _copy_registry_security_components(self.tool_registry, sub)
         return sub
 
     async def _spawn_subagent(self, prompt: str, name: str | None = None) -> str:
@@ -460,6 +528,7 @@ class AgentLoop:
         if not sub_prompt:
             return "Error: prompt is required"
         registry = self._subagent_registry()
+        parent_context = get_current_tool_context()
         model = self.config.model or self.provider.model
         messages: list[Message] = [
             {"role": "system", "content": self.config.system_prompt},
@@ -477,11 +546,21 @@ class AgentLoop:
                     max_iterations=min(self.config.max_turns, 4),
                     tools=registry,
                     max_tool_result_chars=self.config.max_tool_result_chars,
-                    tool_context=ToolRuntimeContext(
-                        session_key=f"subagent:{name or 'subtask'}",
-                        channel="subagent",
-                        workspace=self.session_manager.workspace,
-                        tool_names=sorted(registry.tool_names),
+                    tool_context=_make_runtime_context(
+                        {
+                            "session_key": f"subagent:{name or 'subtask'}",
+                            "channel": "subagent",
+                            "workspace": self.session_manager.workspace,
+                            "tool_names": sorted(registry.tool_names),
+                            "ask": getattr(parent_context, "ask", None),
+                            "subject": f"subagent:{name or 'subtask'}",
+                            "security_subject": f"subagent:{name or 'subtask'}",
+                            "allowed_tools": sorted(registry.tool_names),
+                            "resource_scopes": _context_values(parent_context, "resource_scopes"),
+                            "approval": getattr(parent_context, "approval", None),
+                            "approval_callback": getattr(parent_context, "approval_callback", None),
+                            "approval_id": getattr(parent_context, "approval_id", None),
+                        }
                     ),
                 )
             )
@@ -581,19 +660,73 @@ class AgentLoop:
         chat_id: str | None,
         metadata: dict[str, Any] | None,
         ask_callback: AskCallback | None = None,
+        *,
+        base_context: ToolRuntimeContext | None = None,
     ) -> ToolRuntimeContext:
         if chat_id is None:
             chat_id = session_key.split(":", 1)[1] if ":" in session_key else session_key
-        return ToolRuntimeContext(
-            session_key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            metadata=dict(metadata or {}),
-            workspace=self.session_manager.workspace,
-            tool_names=sorted(self.tool_registry.tool_names) if self.tool_registry is not None else [],
-            spawn=self._spawn_subagent,
-            ask=ask_callback,
-        )
+        metadata_values = dict(metadata or {})
+        values: dict[str, Any] = {
+            "session_key": session_key,
+            "channel": channel,
+            "chat_id": chat_id,
+            "metadata": metadata_values,
+            "workspace": self.session_manager.workspace,
+            "tool_names": sorted(self.tool_registry.tool_names) if self.tool_registry is not None else [],
+            "spawn": self._spawn_subagent,
+            "ask": ask_callback,
+            "subject": metadata_values.get("subject") or f"{channel}:{session_key}",
+            "security_subject": metadata_values.get("security_subject")
+            or metadata_values.get("subject")
+            or f"{channel}:{session_key}",
+            "allowed_tools": metadata_values.get("allowed_tools"),
+            "resource_scopes": metadata_values.get("resource_scopes"),
+            "approval": ask_callback,
+            "approval_callback": ask_callback,
+            "approval_id": metadata_values.get("approval_id"),
+            "tool_call_id": metadata_values.get("tool_call_id", ""),
+        }
+        if channel == "cron":
+            # A pre-scope job (including a legacy job with no scope fields) is
+            # never allowed to inherit the full interactive registry.
+            if not isinstance(values["allowed_tools"], list):
+                values["allowed_tools"] = list(_CRON_LOCAL_READ_TOOLS)
+            if not isinstance(values["resource_scopes"], (dict, list, tuple, set)):
+                values["resource_scopes"] = ["workspace"]
+            values["subject"] = metadata_values.get("subject") or "internal:cron"
+            values["security_subject"] = metadata_values.get("security_subject") or "internal:cron"
+
+        if isinstance(values.get("allowed_tools"), list):
+            values["tool_names"] = list(values["allowed_tools"])
+
+        if base_context is not None:
+            base_values = {
+                field: getattr(base_context, field)
+                for field in _runtime_context_fields()
+                if hasattr(base_context, field)
+            }
+            base_values.update({key: value for key, value in values.items() if value is not None})
+            # A host-supplied background context is authoritative for policy
+            # fields.  Keep the generated session/channel defaults, but do
+            # not replace an explicit subject, approval callback, or scope.
+            for field in (
+                "subject",
+                "security_subject",
+                "approval",
+                "approval_callback",
+                "approval_id",
+                "allowed_tools",
+                "resource_scopes",
+                "spawn",
+                "ask",
+            ):
+                if field in base_values and getattr(base_context, field, None) is not None:
+                    base_values[field] = getattr(base_context, field)
+            if getattr(base_context, "channel", "") == "cron":
+                base_values["spawn"] = None
+                base_values["ask"] = None
+            values = base_values
+        return _make_runtime_context(values)
 
     def _persist_turn(
         self, session: Session, assistant_messages: list[Message], *, turn_id: str | None = None
@@ -747,3 +880,74 @@ class AgentLoop:
             message.get("name"),
             message.get("tool_calls"),
         )
+
+
+def _runtime_context_fields() -> tuple[str, ...]:
+    fields = getattr(ToolRuntimeContext, "__dataclass_fields__", None)
+    if isinstance(fields, dict):
+        return tuple(fields)
+    # ToolRuntimeContext is a dataclass in the current runtime.  Keep a
+    # conservative fallback for adapters that provide a compatible class.
+    return (
+        "session_key",
+        "channel",
+        "chat_id",
+        "metadata",
+        "workspace",
+        "tool_names",
+        "spawn",
+        "ask",
+    )
+
+
+def _make_runtime_context(values: dict[str, Any]) -> ToolRuntimeContext:
+    fields = set(_runtime_context_fields())
+    filtered = {key: value for key, value in values.items() if key in fields}
+    return ToolRuntimeContext(**filtered)
+
+
+def _context_value(context: Any, field: str) -> Any:
+    value = getattr(context, field, None)
+    return value
+
+
+def _context_values(context: Any, field: str) -> Any:
+    value = _context_value(context, field)
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
+def _registry_security_value(registry: Any, field: str) -> Any:
+    if registry is None:
+        return None
+    value = getattr(registry, field, None)
+    if value is not None:
+        return value
+    return getattr(registry, f"_{field}", None)
+
+
+def _copy_registry_security_components(parent: Any, child: Any) -> None:
+    for field in (
+        "security",
+        "security_store",
+        "policy_gate",
+        "approval",
+        "approval_store",
+        "approval_manager",
+        "ask",
+        "subject",
+    ):
+        value = _registry_security_value(parent, field)
+        if value is None:
+            continue
+        try:
+            setattr(child, field, value)
+        except (AttributeError, TypeError):
+            # A future registry may expose immutable security components or
+            # constructor-only slots; its own scoped factory remains in charge.
+            continue

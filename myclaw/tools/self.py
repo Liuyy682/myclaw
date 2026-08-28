@@ -9,6 +9,7 @@ from myclaw.tools.models import MyInput
 class MyTool(Tool):
     read_only = True
     exclusive = False
+    effect = "local_read"
     input_model = MyInput
 
     @property

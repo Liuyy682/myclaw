@@ -15,6 +15,7 @@ from myclaw.tools.models import WebFetchInput, WebSearchInput
 class WebFetchTool(Tool):
     read_only = True
     exclusive = False
+    effect = "network_read"
     input_model = WebFetchInput
 
     @property
@@ -61,6 +62,7 @@ class WebFetchTool(Tool):
 class WebSearchTool(Tool):
     read_only = True
     exclusive = False
+    effect = "network_read"
     input_model = WebSearchInput
 
     @property

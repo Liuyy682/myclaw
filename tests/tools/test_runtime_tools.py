@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from myclaw.bus import MessageBus
 from myclaw.tools.ask import AskUserTool
 from myclaw.tools.cron import CronTool
 from myclaw.tools.message import MessageTool
@@ -98,7 +97,8 @@ def test_ask_tool_returns_answer_when_context_provides_callback(tmp_path):
     }
 
 
-def test_exec_tool_runs_workspace_bounded_commands_and_blocks_destructive_commands(tmp_path):
+def test_exec_tool_runs_workspace_bounded_commands_and_blocks_destructive_commands(tmp_path, monkeypatch):
+    monkeypatch.setenv("MYCLAW_REQUIRE_EXEC_SANDBOX", "false")
     tool = ExecTool(tmp_path)
 
     ok = asyncio.run(tool.execute(cmd="python3 -c \"print('hi')\""))
@@ -155,6 +155,7 @@ def test_exec_sandbox_blocks_network_by_default_and_allows_when_requested(tmp_pa
 def test_exec_falls_back_to_blacklist_when_bwrap_unavailable(tmp_path, monkeypatch):
     import myclaw.tools.shell as shell
 
+    monkeypatch.setenv("MYCLAW_REQUIRE_EXEC_SANDBOX", "false")
     monkeypatch.setattr(shell, "_BWRAP_AVAILABLE", False)
     tool = ExecTool(tmp_path)
 

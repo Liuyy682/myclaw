@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import signal
 import shutil
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from myclaw.tools.filesystem import _is_blocked_device, _is_under
 from myclaw.tools.models import ExecInput
 
 _BWRAP_AVAILABLE: bool | None = None
+_EXEC_MAX_TIMEOUT_SECONDS = 30
+_EXEC_MAX_OUTPUT_CHARS = 12_000
 
 
 def _bwrap_path() -> str | None:
@@ -52,6 +56,7 @@ async def _detect_bwrap() -> bool:
 class ExecTool(Tool):
     read_only = False
     exclusive = True
+    effect = "exec"
     input_model = ExecInput
 
     _BLOCKED_PATTERNS = (
@@ -114,18 +119,28 @@ class ExecTool(Tool):
         except PermissionError as exc:
             return f"Error: {exc}"
         try:
-            timeout = max(1, int(timeout_seconds))
-            output_limit = max(1, int(max_output_chars))
+            # Exec has its own small guardrails in addition to any central
+            # tool-run deadline.  Clamping keeps a model-supplied argument
+            # from turning this process-level tool into an unbounded worker.
+            timeout = min(_EXEC_MAX_TIMEOUT_SECONDS, max(1, int(timeout_seconds)))
+            output_limit = min(_EXEC_MAX_OUTPUT_CHARS, max(1, int(max_output_chars)))
         except (TypeError, ValueError):
             return "Error: timeout_seconds and max_output_chars must be integers"
 
         sandboxed = await _detect_bwrap()
+        if not sandboxed and _sandbox_required():
+            return (
+                "Error: exec requires a bubblewrap sandbox; set "
+                "MYCLAW_REQUIRE_EXEC_SANDBOX=false to allow degraded fallback"
+            )
+
         if sandboxed:
             argv = self._build_bwrap_argv(command, working_dir, allow_network=bool(allow_network))
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         else:
             process = await asyncio.create_subprocess_shell(
@@ -133,19 +148,27 @@ class ExecTool(Tool):
                 cwd=str(working_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         timed_out = False
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             timed_out = True
-            process.kill()
+            _kill_process_group(process)
             stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            # A cancelled tool must not leave a shell (or one of its
+            # descendants) running after the agent turn has gone away.
+            _kill_process_group(process)
+            await process.communicate()
+            raise
 
         return {
             "exit_code": process.returncode,
             "timed_out": timed_out,
             "sandboxed": sandboxed,
+            "degraded": not sandboxed,
             "stdout": self._decode(stdout, output_limit),
             "stderr": self._decode(stderr, output_limit),
             "cwd": working_dir.relative_to(self._workspace).as_posix() or ".",
@@ -200,3 +223,31 @@ class ExecTool(Tool):
         if len(text) <= limit:
             return text
         return text[:limit] + f"\n[truncated: {len(text) - limit} chars omitted]"
+
+
+def _sandbox_required() -> bool:
+    """Return whether exec must have an actual bubblewrap sandbox.
+
+    Compatibility mode is intentionally opt-in: an unset or unrecognised
+    value keeps the secure default, while the conventional explicit false
+    values permit the legacy blacklist fallback.
+    """
+
+    value = os.environ.get("MYCLAW_REQUIRE_EXEC_SANDBOX")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"false", "0", "no", "off"}
+
+
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    """Terminate the process and all children started by an exec tool call."""
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        # The process may have exited between communicate() and cleanup.  A
+        # direct kill is the safe fallback when a process group is unavailable.
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass

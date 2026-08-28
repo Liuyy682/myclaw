@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 SpawnCallback = Callable[[str, str | None], Awaitable[str]]
 AskCallback = Callable[[str, list[str]], Awaitable[str]]
+ApprovalCallback = Callable[[str, list[str]], Awaitable[str] | str]
 
 
 @dataclass(slots=True)
@@ -24,6 +25,18 @@ class ToolRuntimeContext:
     tool_names: list[str] = field(default_factory=list)
     spawn: SpawnCallback | None = None
     ask: AskCallback | None = None
+    # Security fields are appended so existing positional construction keeps
+    # its meaning.  ``ask`` remains the original interactive callback;
+    # ``approval``/``approval_callback`` are explicit aliases for policy
+    # adapters and default to the same callback when consumed by PolicyGate.
+    subject: str = ""
+    security_subject: str = ""
+    approval: ApprovalCallback | None = None
+    approval_callback: ApprovalCallback | None = None
+    allowed_tools: list[str] | set[str] | tuple[str, ...] | None = None
+    resource_scopes: dict[str, Any] | list[str] | set[str] | tuple[str, ...] | None = None
+    approval_id: str | None = None
+    tool_call_id: str = ""
 
 
 _CURRENT_TOOL_CONTEXT: ContextVar[ToolRuntimeContext] = ContextVar(
@@ -48,6 +61,10 @@ def tool_context(context: ToolRuntimeContext):
 class Tool(Protocol):
     read_only: bool
     exclusive: bool
+    # A missing effect is intentionally high-risk in the central PolicyGate.
+    # Concrete tools can expose a string such as ``local_read`` or
+    # ``network_read`` without importing the security module.
+    effect: str | None
     # Built-in tools may opt into runtime Pydantic validation.  Adapters such
     # as MCP tools intentionally leave this unset and continue using their
     # remote input schema unchanged.
@@ -91,6 +108,7 @@ class FunctionTool:
     exclusive: bool = False
     context: ToolRuntimeContext | None = None
     input_model: type[BaseModel] | None = None
+    effect: str | None = None
 
     def cast_params(self, params: dict[str, Any]) -> dict[str, Any]:
         return dict(params)

@@ -9,6 +9,7 @@ from myclaw.tools.models import AskUserInput
 class AskUserTool(Tool):
     read_only = False
     exclusive = True
+    effect = "ask"
     input_model = AskUserInput
 
     @property
