@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 import contextlib
+import logging
 from typing import Any
+import uuid
 
 from myclaw.agent.autocompact import AutoCompactManager
-from myclaw.agent.context import CONTEXT_SUMMARY_METADATA_KEY, ContextBudgetManager, ContextBuilder
+from myclaw.agent.context import (
+    CONTEXT_SUMMARY_METADATA_KEY,
+    ContextBudgetManager,
+    ContextBuilder,
+    TokenEstimator,
+)
 from myclaw.agent.dream import DreamManager
 from myclaw.agent.runner import AgentRunner
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
@@ -17,6 +24,9 @@ from myclaw.session import Session, SessionManager, TranscriptStore
 from myclaw.skills import SkillCatalog
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import AskCallback, ToolRuntimeContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentLoop:
@@ -62,6 +72,10 @@ class AgentLoop:
             raise ValueError("dream_interval_minutes must be at least 0")
         if self.config.auto_compact_recent_messages < 1:
             raise ValueError("auto_compact_recent_messages must be at least 1")
+        if self.config.observation_reflection_batch_size < 1:
+            raise ValueError("observation_reflection_batch_size must be at least 1")
+        if self.config.observation_memory_max_tokens < 1:
+            raise ValueError("observation_memory_max_tokens must be at least 1")
         self.context_builder = ContextBuilder()
         self.context_budget = ContextBudgetManager(provider, self.context_builder)
         self.runner = AgentRunner(provider)
@@ -90,6 +104,21 @@ class AgentLoop:
         )
         self.tool_registry = tool_registry
         self.skill_catalog = skill_catalog
+        self.observation_store = None
+        self.observation_worker = None
+        if self.config.observation_memory_enabled:
+            from myclaw.agent.observation import ObservationMemoryWorker
+            from myclaw.memory import ObservationMemoryStore
+            from myclaw.tools import RecallTool
+
+            self.observation_store = ObservationMemoryStore(session_manager.workspace)
+            self.observation_worker = ObservationMemoryWorker(
+                provider,
+                self.observation_store,
+                batch_size=self.config.observation_reflection_batch_size,
+            )
+            if self.tool_registry is not None and self.tool_registry.get("recall") is None:
+                self.tool_registry.register(RecallTool(self.observation_store))
 
     async def run(
         self,
@@ -156,19 +185,30 @@ class AgentLoop:
             session = self.session_manager.get_or_create(session_key)
             if self._restore_incomplete_turn(session):
                 self.session_manager.save(session)
-            compacted = await self.auto_compact.prepare_session(session_key)
+            compacted = False
+            if self._observation_compaction_safe(session):
+                compacted = await self.auto_compact.prepare_session(session_key)
             if compacted:
                 session = self.session_manager.get_or_create(session_key)
             memory_text = self.memory_store.read_memory()
+            user_memory_text = self.memory_store.read_user()
+            soul_text = self.memory_store.read_soul()
             skills_text = self.skill_catalog.render_for_prompt() if self.skill_catalog is not None else ""
+            session_memory_text = self._observation_memory_text(session_key)
             summarized = await self.context_budget.ensure_budget(
                 session,
                 self.config,
                 user_text,
                 model=self.config.model or self.provider.model,
                 memory_text=memory_text,
+                user_text=user_memory_text,
+                soul_text=soul_text,
                 skills_text=skills_text,
+                session_memory_text=session_memory_text,
                 archive_history=self.memory_store.append_history,
+                fast_summary=lambda count: self._fast_observation_summary(
+                    session_key, session.messages[:count]
+                ),
             )
             if summarized:
                 self.session_manager.save(session)
@@ -177,12 +217,21 @@ class AgentLoop:
             prepare_span.set_attribute("history_messages", len(session.messages))
             prepare_span.set_attribute("memory_chars", len(memory_text))
         with self.observability.span("context.build", "agent") as build_span:
-            messages = self._messages_for_run(session, user_text, memory_text, skills_text)
+            messages = self._messages_for_run(
+                session,
+                user_text,
+                memory_text,
+                skills_text,
+                session_memory_text,
+                user_memory_text,
+                soul_text,
+            )
             build_span.set_attribute("message_count", len(messages))
             build_span.set_attribute("input_chars", len(user_text))
         with self.observability.span("session.persist_input", "storage"):
-            self._mark_pending_user_turn(session, user_text)
-            self.transcript.append(session_key, session.messages[-1])
+            turn_id = uuid.uuid4().hex if self.observation_store is not None else None
+            user_message = self._mark_pending_user_turn(session, user_text, turn_id=turn_id)
+            self.transcript.append(session_key, user_message)
 
         result = await self.runner.run(
             AgentRunSpec(
@@ -198,12 +247,18 @@ class AgentLoop:
             )
         )
         with self.observability.span("session.persist_output", "storage") as persist_span:
-            self._persist_turn(session, result.messages)
-            self.transcript.append_many(session_key, result.messages)
+            persisted_messages = self._persist_turn(session, result.messages, turn_id=turn_id)
+            self.transcript.append_many(session_key, persisted_messages)
             self._clear_pending_user_turn(session)
             self._clear_runtime_checkpoint(session)
             await self._ensure_session_title(session)
             self.session_manager.save(session)
+            self._enqueue_observation_turn(
+                session_key,
+                turn_id,
+                [user_message, *persisted_messages],
+                metadata,
+            )
             persist_span.set_attribute("generated_messages", len(result.messages))
         run_messages = messages + [dict(message) for message in result.messages]
         return RunResult(
@@ -216,6 +271,177 @@ class AgentLoop:
 
     def reset_session(self, session_key: str) -> None:
         self.session_manager.reset(session_key)
+
+    def observation_command(self, session_key: str, command: str) -> str:
+        store = self.observation_store
+        if store is None:
+            return "Observation memory is disabled."
+        parts = command.strip().split()
+        action = parts[0].lower()
+        try:
+            if action == "/om:status":
+                status = store.status(session_key)
+                jobs = status.get("jobs", {})
+                reflection_failure = status.get("reflection_failure")
+                reflection_line = (
+                    f"\nlast reflection error: {reflection_failure.get('last_error')} "
+                    f"(attempt {reflection_failure.get('attempts')}/3)"
+                    if reflection_failure
+                    else ""
+                )
+                return (
+                    "Observation memory status\n"
+                    f"source events: {status.get('source_events', 0)}\n"
+                    f"jobs: pending={jobs.get('pending', 0)}, processing={jobs.get('processing', 0)}, "
+                    f"completed={jobs.get('completed', 0)}, failed={jobs.get('failed', 0)}\n"
+                    f"active observations: {status.get('active_observations', 0)}\n"
+                    f"active reflections: {status.get('active_reflections', 0)}\n"
+                    f"safe watermark: {status.get('safe_watermark') or '-'}"
+                    f"{reflection_line}"
+                )
+            if action == "/om:view":
+                include_archived = len(parts) == 2 and parts[1].lower() == "full"
+                if len(parts) > 2 or (len(parts) == 2 and not include_archived):
+                    return "Usage: /om:view [full]"
+                return store.view_text(session_key, include_archived=include_archived)
+            if action == "/om:recall":
+                if len(parts) != 2:
+                    return "Usage: /om:recall <observation-or-reflection-id>"
+                result = store.recall(parts[1], session_id=session_key)
+                if result is None or result.get("status") != "found":
+                    return "Memory not found or not visible in this session."
+                import json
+
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            if action == "/om:promote":
+                if len(parts) != 2:
+                    return "Usage: /om:promote <reflection-id>"
+                visible = store.recall(parts[1], session_id=session_key)
+                if (
+                    not visible
+                    or visible.get("status") != "found"
+                    or visible.get("kind") != "reflection"
+                ):
+                    return "Reflection not found or not visible in this session."
+                store.promote_reflection(parts[1])
+                return f"Promoted reflection {parts[1]} to workspace memory."
+        except (KeyError, ValueError) as exc:
+            return f"Error: {exc}"
+        return "Unknown observation-memory command."
+
+    def _enqueue_observation_turn(
+        self,
+        session_key: str,
+        turn_id: str | None,
+        events: list[Message],
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        if self.observation_store is None or turn_id is None:
+            return
+        enriched = []
+        for event in events:
+            item = dict(event)
+            item["request_id"] = str((metadata or {}).get("request_id") or "")
+            item["trace_id"] = str((metadata or {}).get("trace_id") or "")
+            enriched.append(item)
+        try:
+            self.observation_store.enqueue_turn(session_key, turn_id, enriched)
+        except Exception:
+            logger.exception("Failed to enqueue observation turn %s", turn_id)
+
+    def _observation_memory_text(self, session_key: str) -> str:
+        store = self.observation_store
+        if store is None:
+            return ""
+        try:
+            observations = store.active_observations(session_key)
+            reflections = store.active_reflections(session_key)
+            workspace_reader = getattr(store, "workspace_reflections", None)
+            workspace = workspace_reader() if callable(workspace_reader) else []
+        except Exception:
+            logger.exception("Failed to render observation memory for %s", session_key)
+            return ""
+
+        priority = {
+            "constraint": 0,
+            "decision": 1,
+            "open_issue": 2,
+            "preference": 3,
+            "progress": 4,
+            "result": 5,
+            "operation": 6,
+        }
+        observations = sorted(
+            observations,
+            key=lambda item: (
+                priority.get(str(item.get("kind") or ""), 99),
+                -float(item.get("importance") or 0),
+                str(item.get("created_at") or ""),
+            ),
+        )
+        reflection_by_id = {item["id"]: item for item in [*workspace, *reflections]}
+        ordered_reflections = sorted(
+            reflection_by_id.values(),
+            key=lambda item: (
+                priority.get(str(item.get("kind") or ""), 99),
+                str(item.get("created_at") or ""),
+            ),
+        )
+        lines = [
+            f"- [reflection:{item['id']}] {item['content']}"
+            for item in ordered_reflections
+        ]
+        lines.extend(
+            f"- [{item.get('kind') or 'fact'}:{item['id']}] {item['content']}"
+            for item in observations
+        )
+        if not lines:
+            return ""
+        estimator = TokenEstimator(self.config.model or self.provider.model)
+        selected: list[str] = []
+        for line in lines:
+            candidate = "\n".join([*selected, line])
+            if estimator.estimate_text(candidate) > self.config.observation_memory_max_tokens:
+                continue
+            selected.append(line)
+        return "\n".join(selected)
+
+    def _observation_compaction_safe(self, session: Session) -> bool:
+        store = self.observation_store
+        if store is None:
+            return True
+        if not session.messages:
+            return True
+        if any(not isinstance(message.get("turn_id"), str) for message in session.messages):
+            return False
+        turn_ids = {
+            str(message["turn_id"])
+            for message in session.messages
+            if isinstance(message.get("turn_id"), str)
+        }
+        checker = getattr(store, "turns_are_safe", None)
+        return bool(checker(session.key, turn_ids)) if callable(checker) else False
+
+    def _fast_observation_summary(
+        self, session_key: str, messages: list[Message]
+    ) -> str | None:
+        store = self.observation_store
+        if store is None:
+            return None
+        if any(not isinstance(message.get("turn_id"), str) for message in messages):
+            return None
+        turn_ids = {
+            str(message["turn_id"])
+            for message in messages
+            if isinstance(message.get("turn_id"), str)
+        }
+        if not turn_ids:
+            return None
+        checker = getattr(store, "turns_are_safe", None)
+        if not callable(checker) or not checker(session_key, turn_ids):
+            return None
+        rendered = self._observation_memory_text(session_key)
+        return rendered or "Observation processing found no durable facts in the covered turns."
 
     def _subagent_registry(self) -> ToolRegistry:
         sub = ToolRegistry()
@@ -330,6 +556,9 @@ class AgentLoop:
         user_text: str,
         memory_text: str = "",
         skills_text: str = "",
+        session_memory_text: str = "",
+        user_memory_text: str | None = None,
+        soul_text: str | None = None,
     ) -> list[Message]:
         return self.context_builder.build_messages(
             self.config,
@@ -337,9 +566,12 @@ class AgentLoop:
             user_text,
             context_summary=session.metadata.get(CONTEXT_SUMMARY_METADATA_KEY),
             memory_text=memory_text,
-            user_text=self.memory_store.read_user(),
-            soul_text=self.memory_store.read_soul(),
+            user_text=(
+                self.memory_store.read_user() if user_memory_text is None else user_memory_text
+            ),
+            soul_text=self.memory_store.read_soul() if soul_text is None else soul_text,
             skills_text=skills_text,
+            session_memory_text=session_memory_text,
         )
 
     def _tool_runtime_context(
@@ -363,7 +595,10 @@ class AgentLoop:
             ask=ask_callback,
         )
 
-    def _persist_turn(self, session: Session, assistant_messages: list[Message]) -> None:
+    def _persist_turn(
+        self, session: Session, assistant_messages: list[Message], *, turn_id: str | None = None
+    ) -> list[Message]:
+        persisted: list[Message] = []
         for message in assistant_messages:
             role = message.get("role")
             content = message.get("content", "")
@@ -376,12 +611,22 @@ class AgentLoop:
                 for key in ("tool_calls", "tool_call_id", "name")
                 if key in message
             }
+            if turn_id is not None:
+                fields.update({"turn_id": turn_id, "event_id": uuid.uuid4().hex})
             session.add_message(role, content, **fields)
+            persisted.append(dict(session.messages[-1]))
+        return persisted
 
-    def _mark_pending_user_turn(self, session: Session, user_text: str) -> None:
-        session.add_message("user", user_text)
+    def _mark_pending_user_turn(
+        self, session: Session, user_text: str, *, turn_id: str | None = None
+    ) -> Message:
+        fields = {}
+        if turn_id is not None:
+            fields = {"turn_id": turn_id, "event_id": uuid.uuid4().hex}
+        session.add_message("user", user_text, **fields)
         session.metadata[self._PENDING_USER_TURN_KEY] = True
         self.session_manager.save(session)
+        return dict(session.messages[-1])
 
     async def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = dict(payload)

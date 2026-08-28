@@ -115,6 +115,21 @@ def test_build_agent_loop_reads_dream_interval_env(tmp_path, monkeypatch):
     assert loop.dream.enabled is True
 
 
+def test_build_agent_loop_reads_observation_memory_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MYCLAW_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MYCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("MYCLAW_OBSERVATION_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("MYCLAW_OBSERVATION_REFLECTION_BATCH_SIZE", "7")
+    monkeypatch.setenv("MYCLAW_OBSERVATION_MEMORY_MAX_TOKENS", "2048")
+
+    loop = build_agent_loop()
+
+    assert loop.config.observation_memory_enabled is True
+    assert loop.config.observation_reflection_batch_size == 7
+    assert loop.config.observation_memory_max_tokens == 2048
+
+
 def test_build_dispatcher_reads_backpressure_environment(monkeypatch):
     monkeypatch.setenv("MYCLAW_MAX_CONCURRENT_REQUESTS", "2")
     monkeypatch.setenv("MYCLAW_MAX_PENDING_REQUESTS", "9")

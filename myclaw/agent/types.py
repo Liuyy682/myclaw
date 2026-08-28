@@ -17,6 +17,9 @@ from myclaw.config import (
     DEFAULT_MAX_CONTEXT_MESSAGES,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
+    DEFAULT_OBSERVATION_MEMORY_ENABLED,
+    DEFAULT_OBSERVATION_MEMORY_MAX_TOKENS,
+    DEFAULT_OBSERVATION_REFLECTION_BATCH_SIZE,
     DEFAULT_SYSTEM_PROMPT,
 )
 from myclaw.types import Message
@@ -44,6 +47,9 @@ class AgentConfig:
     idle_compact_after_minutes: int = DEFAULT_IDLE_COMPACT_AFTER_MINUTES
     auto_compact_recent_messages: int = DEFAULT_AUTO_COMPACT_RECENT_MESSAGES
     dream_interval_minutes: int = DEFAULT_DREAM_INTERVAL_MINUTES
+    observation_memory_enabled: bool = DEFAULT_OBSERVATION_MEMORY_ENABLED
+    observation_reflection_batch_size: int = DEFAULT_OBSERVATION_REFLECTION_BATCH_SIZE
+    observation_memory_max_tokens: int = DEFAULT_OBSERVATION_MEMORY_MAX_TOKENS
     history: list[Message] = field(default_factory=list)
 
 

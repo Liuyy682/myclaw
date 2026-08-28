@@ -47,6 +47,9 @@ from myclaw.config import (
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_BASE_URL_ENV_VAR,
     OPENAI_MODEL_ENV_VAR,
+    OBSERVATION_MEMORY_ENABLED_ENV_VAR,
+    OBSERVATION_MEMORY_MAX_TOKENS_ENV_VAR,
+    OBSERVATION_REFLECTION_BATCH_SIZE_ENV_VAR,
     QUEUE_WAIT_TIMEOUT_SECONDS_ENV_VAR,
     SKILLS_DIRNAME,
     load_env_file,
@@ -76,6 +79,13 @@ def build_agent_loop() -> AgentLoop:
     model = os.environ.get(OPENAI_MODEL_ENV_VAR, DEFAULT_OPENAI_MODEL)
     idle_compact_after_minutes = _env_int(IDLE_COMPACT_AFTER_MINUTES_ENV_VAR, default=0)
     dream_interval_minutes = _env_int(DREAM_INTERVAL_MINUTES_ENV_VAR, default=0)
+    observation_memory_enabled = _env_bool(OBSERVATION_MEMORY_ENABLED_ENV_VAR, default=False)
+    observation_reflection_batch_size = _env_int(
+        OBSERVATION_REFLECTION_BATCH_SIZE_ENV_VAR, default=5
+    )
+    observation_memory_max_tokens = _env_int(
+        OBSERVATION_MEMORY_MAX_TOKENS_ENV_VAR, default=4_000
+    )
     api_key = os.environ.get(OPENAI_API_KEY_ENV_VAR)
     if api_key:
         provider = ObservedProvider(OpenAICompatibleProvider(
@@ -91,6 +101,9 @@ def build_agent_loop() -> AgentLoop:
                 auto_title=True,
                 idle_compact_after_minutes=idle_compact_after_minutes,
                 dream_interval_minutes=dream_interval_minutes,
+                observation_memory_enabled=observation_memory_enabled,
+                observation_reflection_batch_size=observation_reflection_batch_size,
+                observation_memory_max_tokens=observation_memory_max_tokens,
             ),
             session_manager=session_manager,
             tool_registry=tool_registry,
@@ -104,6 +117,9 @@ def build_agent_loop() -> AgentLoop:
             auto_title=True,
             idle_compact_after_minutes=idle_compact_after_minutes,
             dream_interval_minutes=dream_interval_minutes,
+            observation_memory_enabled=observation_memory_enabled,
+            observation_reflection_batch_size=observation_reflection_batch_size,
+            observation_memory_max_tokens=observation_memory_max_tokens,
         ),
         session_manager=session_manager,
         tool_registry=tool_registry,
@@ -120,6 +136,18 @@ def _env_int(name: str, *, default: int) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 def _env_float(name: str, *, default: float) -> float:

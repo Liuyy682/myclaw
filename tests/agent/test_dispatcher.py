@@ -514,6 +514,31 @@ def test_dispatcher_control_command_bypasses_full_request_capacity():
     assert response.content == "Status: running."
 
 
+def test_dispatcher_routes_observation_memory_control_commands():
+    bus = MessageBus()
+
+    class ObservationLoop:
+        def observation_command(self, session_key, command):
+            return f"{session_key}: {command}"
+
+    dispatcher = AgentDispatcher(bus, ObservationLoop())
+
+    async def scenario():
+        accepted = await dispatcher.submit(
+            InboundMessage(
+                channel="cli", sender_id="u", chat_id="direct", content="/om:view full"
+            )
+        )
+        response = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        return accepted, response
+
+    accepted, response = asyncio.run(scenario())
+
+    assert accepted.accepted
+    assert response.content == "cli:direct: /om:view full"
+    assert response.event_type == "control"
+
+
 class BrokenLoop:
     def __init__(self):
         self.calls = 0

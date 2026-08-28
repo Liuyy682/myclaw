@@ -14,6 +14,7 @@ from myclaw.tools.filesystem import (
 from myclaw.tools.message import MessageTool
 from myclaw.tools.memory import MemoryWriteTool
 from myclaw.tools.notebook import NotebookEditTool
+from myclaw.tools.recall import RecallTool
 from myclaw.tools.registry import ToolRegistry
 from myclaw.tools.self import MyTool
 from myclaw.tools.shell import ExecTool
@@ -36,6 +37,7 @@ __all__ = [
     "MyTool",
     "NotebookEditTool",
     "ReadFileTool",
+    "RecallTool",
     "SkillLoadTool",
     "SpawnTool",
     "TaskCreateTool",

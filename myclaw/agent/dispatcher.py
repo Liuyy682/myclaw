@@ -125,6 +125,7 @@ class AgentDispatcher:
                     self._check_auto_compact()
                     self._check_cron()
                     self._check_dream()
+                    self._check_observation_memory()
                     continue
                 self._schedule_task(self._process_message(msg))
         except asyncio.CancelledError:
@@ -174,6 +175,11 @@ class AgentDispatcher:
             return
         if dream.should_run_now() and not dream.running:
             self._schedule_background(dream.run_once())
+
+    def _check_observation_memory(self) -> None:
+        worker = getattr(self.loop, "observation_worker", None)
+        if worker is not None:
+            self._schedule_background(worker.process_once())
 
     async def _run_cron_job(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("id") or "job")
@@ -279,6 +285,7 @@ class AgentDispatcher:
                             if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
                                 run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta, metadata)
                             result = await self.loop.run(msg.content, **run_kwargs)
+                            self._check_observation_memory()
                             content = result.content
                             if getattr(result, "error", None):
                                 trace.set_error(result.error, error_type="AgentRunError")
@@ -313,8 +320,11 @@ class AgentDispatcher:
 
     @classmethod
     def _control_command(cls, content: str) -> str | None:
-        command = content.strip().lower()
-        if command in cls._CONTROL_COMMANDS:
+        command = content.strip()
+        normalized = command.lower()
+        if normalized in cls._CONTROL_COMMANDS:
+            return normalized
+        if normalized.startswith("/om:"):
             return command
         return None
 
@@ -329,7 +339,14 @@ class AgentDispatcher:
             session_key=msg.session_key, channel=msg.channel, trace_id=trace_id or None,
             attributes={"command": command},
         ):
-            if command == "/status":
+            if command.startswith("/om:"):
+                handler = getattr(self.loop, "observation_command", None)
+                content = (
+                    handler(msg.session_key, command)
+                    if callable(handler)
+                    else "Observation memory is unavailable."
+                )
+            elif command == "/status":
                 content = self._session_status(msg.session_key)
             elif command == "/stop":
                 content = await self._stop_session(msg.session_key)

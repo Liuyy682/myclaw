@@ -15,7 +15,6 @@ from myclaw.config import (
     GLOB_DEFAULT_MAX_MATCHES,
     GREP_DEFAULT_MAX_MATCHES,
     LIST_DIR_DEFAULT_MAX_ENTRIES,
-    READ_FILE_DEFAULT_LIMIT,
 )
 
 
@@ -94,6 +93,10 @@ class MemoryWriteInput(ToolInputModel):
     content: str
 
 
+class RecallInput(ToolInputModel):
+    id: str
+
+
 class MessageInput(ToolInputModel):
     content: str
     channel: str | None = None
@@ -160,6 +163,7 @@ __all__ = [
     "MyInput",
     "NotebookEditInput",
     "ReadFileInput",
+    "RecallInput",
     "SkillLoadInput",
     "SpawnInput",
     "TaskCreateInput",
