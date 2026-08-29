@@ -9,6 +9,7 @@ the worker's implementation details.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,6 +22,7 @@ from typing import Any, Protocol, TypeVar
 logger = logging.getLogger(__name__)
 
 DEFAULT_REFLECTION_BATCH_SIZE = 5
+DEFAULT_OBSERVATION_RECOVERY_SCAN_INTERVAL_SECONDS = 60.0
 OBSERVATION_KINDS = frozenset(
     {
         "operation",
@@ -403,20 +405,54 @@ def _prompt_json(value: Any) -> str:
 class ObservationMemoryWorker:
     """Process one observation job and, when due, one reflection batch."""
 
+    RECOVERY_SCAN_INTERVAL_SECONDS = DEFAULT_OBSERVATION_RECOVERY_SCAN_INTERVAL_SECONDS
+
     def __init__(
         self,
         provider: Any,
         store: ObservationMemoryStore,
         *,
         batch_size: int = DEFAULT_REFLECTION_BATCH_SIZE,
+        recovery_scan_interval_seconds: float = RECOVERY_SCAN_INTERVAL_SECONDS,
     ) -> None:
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
+        if (
+            isinstance(recovery_scan_interval_seconds, bool)
+            or not isinstance(recovery_scan_interval_seconds, (int, float))
+            or not math.isfinite(float(recovery_scan_interval_seconds))
+            or recovery_scan_interval_seconds <= 0
+        ):
+            raise ValueError("recovery_scan_interval_seconds must be positive")
         self.provider = provider
         self.store = store
         self.batch_size = batch_size
+        self.recovery_scan_interval_seconds = float(recovery_scan_interval_seconds)
+        self._wake_event = asyncio.Event()
         self._running = False
         self.last_result = ProcessResult("idle")
+
+    def wake(self) -> None:
+        """Wake a running worker after a successful enqueue."""
+
+        self._wake_event.set()
+
+    async def run(self) -> None:
+        """Drain work, then sleep until notified or the recovery scan is due."""
+
+        while True:
+            # Clear before draining so a wake received while processing stays
+            # set and causes another drain immediately after this one.
+            self._wake_event.clear()
+            await self.drain()
+            try:
+                await asyncio.wait_for(
+                    self._wake_event.wait(), timeout=self.recovery_scan_interval_seconds
+                )
+            except asyncio.TimeoutError:
+                # A timeout is the periodic recovery scan; the next loop drains
+                # even when no producer called wake().
+                continue
 
     async def process_once(self) -> ProcessResult:
         """Claim one job and contain every failure at the background boundary."""
@@ -588,6 +624,7 @@ class ObservationMemoryWorker:
 
 __all__ = [
     "DEFAULT_REFLECTION_BATCH_SIZE",
+    "DEFAULT_OBSERVATION_RECOVERY_SCAN_INTERVAL_SECONDS",
     "OBSERVATION_KINDS",
     "Observation",
     "Reflection",

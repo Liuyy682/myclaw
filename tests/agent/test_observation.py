@@ -60,6 +60,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def _wait_until(predicate, *, timeout=0.5):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
 def test_observation_call_is_no_tool_and_commits_valid_json():
     provider = FakeProvider(json.dumps({"observations": [_observation(1)]}))
     store = FakeStore([{"id": "job-1", "session_id": "s1", "event_ids": ["event-1"]}])
@@ -172,3 +178,115 @@ def test_provider_failure_is_contained_and_retryable():
     assert result.outcome == "failed"
     assert store.observation_commits == []
     assert store.failures[0][0:2] == ("observation", "job-1")
+
+
+def test_worker_run_scans_at_startup_and_stops_cleanly():
+    provider = FakeProvider(json.dumps({"observations": [_observation(1)]}))
+    store = FakeStore([{"id": "job-1", "session_id": "s1", "event_ids": ["event-1"]}])
+    worker = ObservationMemoryWorker(provider, store)
+
+    async def scenario():
+        task = asyncio.create_task(worker.run())
+        await _wait_until(lambda: len(store.observation_commits) == 1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+
+    assert [commit[0] for commit in store.observation_commits] == ["job-1"]
+
+
+def test_worker_wake_coalesces_and_drains_all_available_jobs():
+    provider = FakeProvider(
+        json.dumps({"observations": [_observation(1)]}),
+        json.dumps({"observations": [_observation(2)]}),
+    )
+    store = FakeStore()
+    worker = ObservationMemoryWorker(provider, store)
+
+    async def scenario():
+        task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0)
+        store.jobs.extend(
+            [
+                {"id": "job-1", "session_id": "s1", "event_ids": ["event-1"]},
+                {"id": "job-2", "session_id": "s1", "event_ids": ["event-1"]},
+            ]
+        )
+        worker.wake()
+        worker.wake()
+        await _wait_until(lambda: len(store.observation_commits) == 2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+
+    assert [commit[0] for commit in store.observation_commits] == ["job-1", "job-2"]
+
+
+def test_worker_recovery_scan_finds_job_without_wake():
+    provider = FakeProvider(json.dumps({"observations": [_observation(1)]}))
+    store = FakeStore()
+    worker = ObservationMemoryWorker(provider, store, recovery_scan_interval_seconds=0.01)
+
+    async def scenario():
+        task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0)
+        store.jobs.append(
+            {"id": "job-1", "session_id": "s1", "event_ids": ["event-1"]}
+        )
+        await _wait_until(lambda: len(store.observation_commits) == 1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+
+    assert store.observation_commits[0][0] == "job-1"
+
+
+def test_wake_received_while_draining_is_not_lost():
+    class WakeDuringClaimStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.worker = None
+            self.inject_on_claim = False
+
+        def claim_observation_job(self):
+            if self.inject_on_claim:
+                self.inject_on_claim = False
+                self.jobs.append(
+                    {"id": "job-1", "session_id": "s1", "event_ids": ["event-1"]}
+                )
+                self.worker.wake()
+                return None
+            return super().claim_observation_job()
+
+    provider = FakeProvider(json.dumps({"observations": [_observation(1)]}))
+    store = WakeDuringClaimStore()
+    worker = ObservationMemoryWorker(provider, store)
+    store.worker = worker
+
+    async def scenario():
+        task = asyncio.create_task(worker.run())
+        await asyncio.sleep(0)
+        store.inject_on_claim = True
+        worker.wake()
+        await _wait_until(lambda: len(store.observation_commits) == 1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+
+    assert store.observation_commits[0][0] == "job-1"

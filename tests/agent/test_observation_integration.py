@@ -125,6 +125,7 @@ def test_agent_loop_durably_enqueues_completed_turn_when_enabled(tmp_path, monke
     status = loop.observation_store.status("cli:one")
     assert status["source_events"] == 2
     assert status["jobs"]["pending"] == 1
+    assert loop.observation_worker._wake_event.is_set()
     assert registry.get("recall") is not None
     messages = manager.get_or_create("cli:one").messages
     assert len({message["turn_id"] for message in messages}) == 1
@@ -145,6 +146,28 @@ def test_agent_loop_leaves_observation_memory_absent_when_disabled(tmp_path, mon
 
     assert loop.observation_store is None
     assert not (tmp_path / "memory" / "observation_memory.db").exists()
+
+
+def test_failed_observation_enqueue_does_not_wake_worker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "myclaw.agent.context.TokenEstimator._load_encoding", lambda *args: None
+    )
+    loop = AgentLoop(
+        ConversationProvider(),
+        AgentConfig(system_prompt="", auto_title=False, observation_memory_enabled=True),
+        session_manager=SessionManager(tmp_path),
+    )
+    wake_calls = []
+    monkeypatch.setattr(loop.observation_worker, "wake", lambda: wake_calls.append(True))
+
+    def fail_enqueue(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(loop.observation_store, "enqueue_turn", fail_enqueue)
+
+    asyncio.run(loop.run("hello", session_key="cli:one"))
+
+    assert wake_calls == []
 
 
 def test_safe_observation_watermark_uses_fast_compaction_without_summary_call(

@@ -127,6 +127,9 @@ class AgentDispatcher:
         return SubmissionResult(False, reason="service_overloaded", retry_after_seconds=1)
 
     async def run(self) -> None:
+        observation_worker = getattr(self.loop, "observation_worker", None)
+        if observation_worker is not None:
+            self._schedule_background(observation_worker.run())
         try:
             while True:
                 try:
@@ -138,7 +141,6 @@ class AgentDispatcher:
                     self._check_auto_compact()
                     self._check_cron()
                     self._check_dream()
-                    self._check_observation_memory()
                     continue
                 self._schedule_task(self._process_message(msg))
         except asyncio.CancelledError:
@@ -188,11 +190,6 @@ class AgentDispatcher:
             return
         if dream.should_run_now() and not dream.running:
             self._schedule_background(dream.run_once())
-
-    def _check_observation_memory(self) -> None:
-        worker = getattr(self.loop, "observation_worker", None)
-        if worker is not None:
-            self._schedule_background(worker.process_once())
 
     async def _run_cron_job(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("id") or "job")
@@ -315,7 +312,6 @@ class AgentDispatcher:
                             if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
                                 run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta, metadata)
                             result = await self.loop.run(msg.content, **run_kwargs)
-                            self._check_observation_memory()
                             content = result.content
                             if getattr(result, "error", None):
                                 trace.set_error(result.error, error_type="AgentRunError")

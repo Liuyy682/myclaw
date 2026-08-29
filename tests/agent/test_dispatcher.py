@@ -77,6 +77,43 @@ def test_dispatcher_idle_tick_checks_auto_compact():
     assert calls == [set()]
 
 
+class RecordingObservationWorker:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.process_once_calls = 0
+
+    async def run(self):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    async def process_once(self):
+        self.process_once_calls += 1
+
+
+def test_dispatcher_starts_one_observation_worker_and_cancels_it_on_shutdown():
+    bus = MessageBus()
+    loop = CapturingLoop()
+    loop.observation_worker = RecordingObservationWorker()
+    dispatcher = AgentDispatcher(bus, loop)
+    dispatcher._AUTO_COMPACT_IDLE_TICK_SECONDS = 0.01
+
+    async def scenario():
+        task = asyncio.create_task(dispatcher.run())
+        await asyncio.wait_for(loop.observation_worker.started.wait(), timeout=0.5)
+        await asyncio.sleep(0.05)
+        await _stop(task)
+
+    asyncio.run(scenario())
+
+    assert loop.observation_worker.cancelled.is_set()
+    assert loop.observation_worker.process_once_calls == 0
+
+
 class RecordingDream:
     def __init__(self, *, enabled=True, ready=True):
         self.enabled = enabled

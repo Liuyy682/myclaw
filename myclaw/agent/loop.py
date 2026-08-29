@@ -401,6 +401,10 @@ class AgentLoop:
             self.observation_store.enqueue_turn(session_key, turn_id, enriched)
         except Exception:
             logger.exception("Failed to enqueue observation turn %s", turn_id)
+        else:
+            worker = self.observation_worker
+            if worker is not None:
+                worker.wake()
 
     def _observation_memory_text(self, session_key: str) -> str:
         store = self.observation_store
