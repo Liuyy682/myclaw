@@ -91,6 +91,15 @@ describe('MyClaw WebUI', () => {
     expect(input).not.toBeDisabled()
   })
 
+  test('renders when the Web Crypto API is unavailable', async () => {
+    vi.stubGlobal('crypto', undefined)
+    vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ sessions: [] })))
+
+    render(<App />)
+
+    expect(await screen.findByText('今天想一起完成什么？')).toBeInTheDocument()
+  })
+
   test('loads a saved session and resumes it with its session key', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

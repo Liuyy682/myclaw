@@ -16,10 +16,18 @@ import type {
 } from '../../shared/types/gateway'
 
 function createChatId() {
-  const id = typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+  const id = typeof cryptoApi?.randomUUID === 'function'
+    ? cryptoApi.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return `web-${id}`
+}
+
+function createRequestId() {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+  return typeof cryptoApi?.randomUUID === 'function'
+    ? cryptoApi.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function chatIdFromSessionKey(key: string) {
@@ -125,7 +133,7 @@ function ChatPage({ onShowMonitoring }: { onShowMonitoring: () => void }) {
         chatId: active.chatId,
         sessionKey: active.sessionKey,
         content,
-        requestId: crypto.randomUUID(),
+        requestId: createRequestId(),
       })
       if (!active.sessionKey) {
         setActive((current) => ({ ...current, sessionKey: `gateway:${current.chatId}` }))
