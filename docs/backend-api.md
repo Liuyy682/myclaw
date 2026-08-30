@@ -8,6 +8,12 @@ python -m myclaw gateway
 
 The default base URL is `http://127.0.0.1:8765`. All JSON responses use UTF-8.
 
+## Health
+
+`GET /api/health` returns `{"status":"ok"}` with HTTP `200`. This only confirms
+that the Gateway HTTP server is alive; it does not verify model-provider or tool
+availability.
+
 ## Send a message
 
 `POST /api/messages`

@@ -126,6 +126,13 @@ class HttpGatewayServer:
                 await _send_json(writer, 400, {"error": "bad request"})
                 return
 
+            if request.path == "/api/health":
+                if request.method != "GET":
+                    await _send_json(writer, 405, {"error": "method not allowed"})
+                    return
+                await _send_json(writer, 200, {"status": "ok"})
+                return
+
             if request.path == "/api/messages":
                 if request.method != "POST":
                     await _send_json(writer, 405, {"error": "method not allowed"})

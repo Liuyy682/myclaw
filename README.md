@@ -28,6 +28,54 @@ python -m myclaw gateway --host 127.0.0.1 --port 8765
 http://127.0.0.1:8765/
 ```
 
+## 本机 Docker 一键部署
+
+仅在本机使用时，可以用 Docker Compose 构建并启动 Gateway 与内置 WebUI：
+需要已安装并运行 Docker Engine 或 Docker Desktop，以及 Docker Compose v2（`docker compose` 插件）。
+
+```bash
+./scripts/docker-deploy.sh
+```
+
+首次运行会在项目根目录创建 `.env`（不会覆盖已有文件）。编辑其中的
+`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 和 `MYCLAW_PORT` 后，重新运行部署脚本即可。
+没有 API Key 时会使用内置 Fake Provider，服务仍可启动但不会调用真实模型。
+
+后续启动已构建的容器（不重新构建镜像）：
+
+```bash
+./scripts/docker-start.sh
+```
+
+默认只将 `127.0.0.1:${MYCLAW_PORT:-8765}` 发布到本机，访问
+`http://127.0.0.1:8765/`。运行数据保存在两个 Docker named volume：`/data`
+（`MYCLAW_WORKSPACE`，会话、记忆、任务、Cron、安全和观测 SQLite 数据）以及
+`/workspace`（Agent 文件和 Shell 工具工作区）。查看状态和日志、停止服务：
+
+```bash
+docker compose ps
+docker compose logs -f myclaw
+docker compose stop
+```
+
+删除容器但保留数据：
+
+```bash
+docker compose down
+```
+
+删除容器并永久删除上述数据卷（谨慎执行）：
+
+```bash
+docker compose down -v
+```
+
+容器以非 root 用户运行，不挂载 Docker socket，也不使用特权模式。普通 Docker
+环境中 bubblewrap 的用户命名空间通常不可用，因此本机 Compose 配置显式设置
+`MYCLAW_REQUIRE_EXEC_SANDBOX=false`；`exec` 会在容器隔离范围内以降级模式执行，
+并可能访问容器网络。这是本机部署便利性设置，不能当作公网安全边界；如需公网服务，
+还必须另行设计认证、TLS、网络隔离和高风险工具策略。
+
 React WebUI 已构建并包含在 Python 包中。开发前端时，请在一个终端运行 Gateway、在另一个终端运行 Vite 开发服务器：
 
 ```bash

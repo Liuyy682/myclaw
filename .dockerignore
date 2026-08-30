@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.codex
+.agents
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.pytest-tmp
+webui/node_modules
+webui/coverage
+eval-results

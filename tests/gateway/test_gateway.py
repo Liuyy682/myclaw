@@ -224,6 +224,17 @@ def test_gateway_root_serves_built_webui(tmp_path, monkeypatch):
     assert 'src="/assets/app.js"' in body
 
 
+def test_gateway_health_returns_ok():
+    async def scenario(server):
+        return await _request(server.port, "GET", "/api/health")
+
+    status, headers, body = asyncio.run(_with_server(RecordingDispatcher(), scenario))
+
+    assert status == 200
+    assert headers["content-type"].startswith("application/json")
+    assert json.loads(body) == {"status": "ok"}
+
+
 def test_repository_contains_production_webui_assets():
     index = gateway_static._WEB_DIST_DIR / "index.html"
 

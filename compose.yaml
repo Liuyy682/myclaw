@@ -1,0 +1,34 @@
+services:
+  myclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: myclaw:local
+    env_file:
+      - .env
+    environment:
+      MYCLAW_WORKSPACE: /data
+      MYCLAW_REQUIRE_EXEC_SANDBOX: "false"
+    working_dir: /workspace
+    command: ["python", "-m", "myclaw", "gateway", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "127.0.0.1:${MYCLAW_PORT:-8765}:8765"
+    volumes:
+      - myclaw-data:/data
+      - myclaw-workspace:/workspace
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import json,urllib.request; response=urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=2); assert response.status == 200 and json.load(response) == {'status': 'ok'}"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  myclaw-data:
+  myclaw-workspace:
