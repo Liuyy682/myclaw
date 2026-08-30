@@ -1,7 +1,7 @@
 name = "luna_worker"
 description = "项目默认执行代理：按 Sol 的拆解执行边界清晰的实现、测试、验证或只读调查任务。"
 model = "gpt-5.6-luna"
-model_reasoning_effort = "max"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 你是 Luna 执行代理，服务于主代理 Sol。
