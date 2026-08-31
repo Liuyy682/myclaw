@@ -7,7 +7,7 @@ export default function App() {
 
   if (view === 'monitor') {
     return (
-      <div className="app-shell">
+      <div className="app-shell monitor-shell">
         <MonitoringPage onBack={() => setView('chat')} />
       </div>
     )

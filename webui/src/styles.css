@@ -1246,6 +1246,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 }
 
 .app-shell { grid-template-columns: 286px minmax(0, 1fr); background: var(--canvas); }
+.app-shell.monitor-shell { grid-template-columns: minmax(0, 1fr); }
 .sidebar { padding: 22px 14px 14px; border-right: 1px solid #263340; color: #F4F7F8; background: var(--ink); }
 .brand { padding: 0 8px 24px; }
 .brand-mark { border: 1px solid rgba(255,255,255,.22); border-radius: 11px; color: var(--ink); background: var(--ochre); box-shadow: 0 5px 18px rgba(197,138,58,.2); }
@@ -1367,6 +1368,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 
 @media (max-width: 1050px) { .metric-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 @media (max-width: 780px) {
+  .app-shell { grid-template-columns: 1fr; }
   .sidebar { width: min(310px, 88vw); box-shadow: 16px 0 40px rgba(23,33,43,.3); }
   .mobile-scrim { background: rgba(23,33,43,.5); }
   .chat-header { padding: 0 14px; } .messages { padding: 28px 16px; } .composer { padding: 10px 12px 11px; }

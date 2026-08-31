@@ -278,6 +278,7 @@ describe('MyClaw WebUI', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: '运行监控' }))
+    expect(document.querySelector('.monitor-shell')).toBeInTheDocument()
     expect(await screen.findByText('100.0%')).toBeInTheDocument()
     expect(screen.getByRole('img', { name: /1 个请求，0 个错误/ })).toBeInTheDocument()
     const traceTrigger = await screen.findByRole('button', { name: /agent.request/ })
