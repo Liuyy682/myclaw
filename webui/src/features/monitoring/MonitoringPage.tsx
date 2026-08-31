@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -27,6 +27,29 @@ import type {
 } from '../../shared/types/gateway'
 
 const WINDOWS = ['1h', '24h', '7d']
+
+const STATUS_LABELS: Record<TraceStatus, string> = {
+  running: '运行中',
+  ok: '成功',
+  error: '错误',
+  cancelled: '已取消',
+  abandoned: '已中断',
+}
+
+const LOG_LEVEL_LABELS: Record<string, string> = {
+  INFO: '信息',
+  WARNING: '警告',
+  ERROR: '错误',
+  CRITICAL: '严重',
+}
+
+function statusLabel(status: TraceStatus) {
+  return STATUS_LABELS[status] || status
+}
+
+function logLevelLabel(level: string) {
+  return LOG_LEVEL_LABELS[level] || level
+}
 
 function formatDuration(value: number | null) {
   if (value == null) return '—'
@@ -147,9 +170,18 @@ export default function MonitoringPage({ onBack }: { onBack: () => void }) {
 
         <section className="monitor-card trend-card" aria-label="请求趋势">
           <div className="monitor-card-title"><div><span className="eyebrow">趋势</span><h2>请求与错误</h2></div></div>
+          <div className="trend-legend" aria-label="图例">
+            <span><i className="requests" />请求</span>
+            <span><i className="errors" />错误</span>
+          </div>
           <div className="trend-bars">
             {(summary?.series || []).slice(-24).map((item) => (
-              <div className="trend-column" key={item.bucket} title={`${item.bucket}: ${item.requests} 请求 / ${item.errors} 错误`}>
+              <div
+                className="trend-column"
+                key={item.bucket}
+                role="img"
+                aria-label={`${formatTime(item.bucket)}，${item.requests} 个请求，${item.errors} 个错误`}
+              >
                 <div className="trend-total" style={{ height: `${Math.max(6, item.requests / maxSeries * 100)}%` }}>
                   {item.errors > 0 && <div className="trend-error" style={{ height: `${item.errors / item.requests * 100}%` }} />}
                 </div>
@@ -157,6 +189,12 @@ export default function MonitoringPage({ onBack }: { onBack: () => void }) {
             ))}
             {summary?.series.length === 0 && <div className="monitor-empty">当前时间范围内还没有 Trace</div>}
           </div>
+          {summary && summary.series.length > 0 && (
+            <div className="trend-axis" aria-hidden="true">
+              <time>{formatTime(summary.series[Math.max(0, summary.series.length - 24)].bucket)}</time>
+              <time>{formatTime(summary.series.at(-1)!.bucket)}</time>
+            </div>
+          )}
         </section>
 
         <div className="monitor-tabs" role="tablist">
@@ -178,7 +216,7 @@ export default function MonitoringPage({ onBack }: { onBack: () => void }) {
             <div className="trace-list">
               {traces.map((trace) => (
                 <button key={trace.trace_id} className="trace-row" onClick={() => void openTrace(trace)}>
-                  <span className={`status-badge ${trace.status}`}>{trace.status}</span>
+                  <span className={`status-badge ${trace.status}`}>{statusLabel(trace.status)}</span>
                   <span><strong>{trace.name}</strong><small>{trace.kind} · {shortId(trace.trace_id)}</small></span>
                   <span><strong>{trace.session_key || '后台任务'}</strong><small>{trace.model || trace.channel || '—'}</small></span>
                   <span><strong>{formatDuration(trace.duration_ms)}</strong><small>{formatTime(trace.started_at)}</small></span>
@@ -191,16 +229,16 @@ export default function MonitoringPage({ onBack }: { onBack: () => void }) {
           <section className="monitor-card">
             <div className="monitor-toolbar log-toolbar">
               <select aria-label="日志级别" value={level} onChange={(event) => setLevel(event.target.value)}>
-                <option value="">全部级别</option><option value="INFO">INFO</option>
-                <option value="WARNING">WARNING</option><option value="ERROR">ERROR</option>
-                <option value="CRITICAL">CRITICAL</option>
+                <option value="">全部级别</option><option value="INFO">信息</option>
+                <option value="WARNING">警告</option><option value="ERROR">错误</option>
+                <option value="CRITICAL">严重</option>
               </select>
               <label className="monitor-search"><Search size={15} /><input aria-label="搜索日志" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志" /></label>
             </div>
             <div className="log-list">
               {logs.map((log) => (
                 <div className="log-row" key={log.id}>
-                  <span className={`log-level ${log.level.toLowerCase()}`}>{log.level}</span>
+                  <span className={`log-level ${log.level.toLowerCase()}`}>{logLevelLabel(log.level)}</span>
                   <time>{formatTime(log.timestamp)}</time>
                   <strong>{log.component}</strong>
                   <span>{log.message}</span>
@@ -225,15 +263,53 @@ function Metric({ icon: Icon, label, value, note }: { icon: typeof Activity; lab
 function TraceDrawer({ detail, onClose }: { detail: TraceDetail; onClose: () => void }) {
   const start = new Date(detail.trace.started_at).getTime()
   const duration = Math.max(detail.trace.duration_ms || 1, 1)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  useEffect(() => {
+    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusable = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(`.trace-drawer ${focusable}`))
+        .filter((element) => !element.hasAttribute('disabled'))
+      if (elements.length === 0) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    const frame = requestAnimationFrame(() => closeButtonRef.current?.focus())
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', handleKeyDown)
+      previouslyFocusedRef.current?.focus()
+      previouslyFocusedRef.current = null
+    }
+  }, [])
+
   return <>
     <div className="drawer-scrim" onClick={onClose} />
-    <aside className="trace-drawer" aria-label="Trace 详情" aria-modal="true">
+    <aside className="trace-drawer" role="dialog" aria-label="Trace 详情" aria-modal="true">
       <div className="trace-drawer-header">
-        <div><span className="eyebrow">Trace {shortId(detail.trace.trace_id)}</span><h2>{detail.trace.name}</h2></div>
-        <button className="icon-button" onClick={onClose} aria-label="关闭 Trace 详情"><X size={19} /></button>
+        <div><span className="eyebrow">执行轨迹 · {shortId(detail.trace.trace_id)}</span><h2>{detail.trace.name}</h2></div>
+        <button ref={closeButtonRef} className="icon-button" onClick={onClose} aria-label="关闭 Trace 详情"><X size={19} /></button>
       </div>
       <div className="trace-meta">
-        <span className={`status-badge ${detail.trace.status}`}>{detail.trace.status}</span>
+        <span className={`status-badge ${detail.trace.status}`}>{statusLabel(detail.trace.status)}</span>
         <span>{detail.trace.session_key || '后台任务'}</span><span>{formatDuration(detail.trace.duration_ms)}</span>
       </div>
       <div className="waterfall">

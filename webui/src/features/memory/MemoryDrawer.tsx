@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrainCircuit, RefreshCw, Sparkles, UserRound, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,6 +17,10 @@ export default function MemoryDrawer({ open, onClose }: { open: boolean; onClose
   const [memoryTab, setMemoryTab] = useState<keyof MemoryPayload>('memory')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   const loadMemory = useCallback(async () => {
     setLoading(true)
@@ -34,20 +38,54 @@ export default function MemoryDrawer({ open, onClose }: { open: boolean; onClose
     if (open && memory === EMPTY_MEMORY && !loading) void loadMemory()
   }, [loadMemory, loading, memory, open])
 
+  useEffect(() => {
+    if (!open) return
+    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusable = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(`.memory-drawer ${focusable}`))
+        .filter((element) => !element.hasAttribute('disabled'))
+      if (elements.length === 0) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    const frame = requestAnimationFrame(() => closeButtonRef.current?.focus())
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', handleKeyDown)
+      previouslyFocusedRef.current?.focus()
+      previouslyFocusedRef.current = null
+    }
+  }, [open])
+
   if (!open) return null
   const currentTab = MEMORY_TABS.find((tab) => tab.key === memoryTab)!
   const CurrentIcon = currentTab.icon
 
   return <>
     <div className="drawer-scrim" onClick={onClose} />
-    <aside className="memory-drawer" aria-label="长期记忆" aria-modal="true">
+    <aside className="memory-drawer" role="dialog" aria-label="长期记忆" aria-modal="true">
       <div className="memory-header">
         <div><span className="eyebrow">长期上下文</span><h2>MyClaw 记忆</h2></div>
         <div className="memory-header-actions">
           <button className="icon-button" onClick={() => void loadMemory()} aria-label="重新加载记忆">
             <RefreshCw size={17} className={loading ? 'spin' : ''} />
           </button>
-          <button className="icon-button" onClick={onClose} aria-label="关闭记忆面板"><X size={19} /></button>
+          <button ref={closeButtonRef} className="icon-button" onClick={onClose} aria-label="关闭记忆面板"><X size={19} /></button>
         </div>
       </div>
 

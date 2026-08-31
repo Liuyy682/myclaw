@@ -14,7 +14,7 @@ type Props = {
 
 function ToolActivityGroup({ tools }: { tools: ToolActivity[] }) {
   const running = tools.some((tool) => tool.state === 'running')
-  return <details className="tool-activity">
+  return <details className="tool-activity" aria-label="Agent 执行轨迹">
     <summary>
       <Terminal size={15} />
       <span>{running ? '正在调用工具' : '已调用工具'} · {tools.length} 项</span>
