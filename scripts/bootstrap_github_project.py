@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -53,16 +54,30 @@ class GhRunner:
     """
 
     executable: str = "gh"
+    transient_attempts: int = 4
 
     def run(self, args: Sequence[str]) -> str:
         command = [self.executable, *[str(arg) for arg in args]]
-        completed = subprocess.run(command, text=True, capture_output=True)
-        if completed.returncode:
+        transient_markers = (
+            "connection attempt failed",
+            "connection reset by peer",
+            "context deadline exceeded",
+            "dial tcp",
+            "i/o timeout",
+            "tls handshake timeout",
+        )
+        for attempt in range(1, self.transient_attempts + 1):
+            completed = subprocess.run(command, text=True, capture_output=True)
+            if not completed.returncode:
+                # ``gh auth status`` writes its useful status (including scopes)
+                # to stderr even on success; retain both streams for preflight.
+                return "\n".join(part for part in (completed.stdout, completed.stderr) if part)
             detail = (completed.stderr or completed.stdout or "").strip()
-            raise GhError(f"{' '.join(command)} failed: {detail}")
-        # ``gh auth status`` writes its useful status (including scopes) to
-        # stderr even on success; retain both streams for preflight parsing.
-        return "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+            transient = any(marker in detail.lower() for marker in transient_markers)
+            if not transient or attempt == self.transient_attempts:
+                raise GhError(f"{' '.join(command)} failed: {detail}")
+            time.sleep(min(2 ** (attempt - 1), 4))
+        raise AssertionError("unreachable")
 
 
 @dataclass
