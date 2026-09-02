@@ -134,6 +134,14 @@ def test_apply_uses_argument_arrays_and_is_idempotent_for_existing_markers():
     assert any(call[:2] == ["issue", "view"] and call[2].startswith("https://") for call in fake.calls)
     field_create = next(call for call in fake.calls if call[:2] == ["project", "field-create"])
     assert "--name" in field_create and "--title" not in field_create
+    created_field_names = {
+        call[call.index("--name") + 1]
+        for call in fake.calls
+        if call[:2] == ["project", "field-create"]
+    }
+    assert "Work Type" in created_field_names
+    assert "Type" not in created_field_names
+    assert sum(call[:2] == ["project", "item-list"] for call in fake.calls) == 1
     assert any(call[:2] == ["api", "graphql"] for call in fake.calls)
 
 

@@ -11,7 +11,7 @@ fields:
   Status: [Backlog, Ready, In progress, In review, Blocked, Done]
   Priority: [P0, P1]
   Area: [Security, Upload, Plan, Tasks, WebUI, Runtime, Memory, Cron, MCP, Skills, Observability, Settings]
-  Type: [Epic, Feature, Enhancement, Security, Reliability, Documentation, Research]
+  Work Type: [Epic, Feature, Enhancement, Security, Reliability, Documentation, Research]
   Effort: [XS, S, M, L, XL]
   Phase: [Phase 1 - Core workflow, Phase 2 - Productization]
 

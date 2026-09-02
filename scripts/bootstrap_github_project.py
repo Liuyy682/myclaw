@@ -308,6 +308,8 @@ class ProjectBootstrapper:
         self._project: dict[str, Any] = {}
         self._fields: dict[str, dict[str, Any]] = {}
         self._project_created = False
+        self._managed_project = False
+        self._project_items: list[dict[str, Any]] | None = None
 
     def _query(self, args: Sequence[str]) -> Any:
         return _json_output(_run(self.runner, args))
@@ -356,10 +358,13 @@ class ProjectBootstrapper:
 
     def _ensure_project(self) -> None:
         title = _project_title(self.config, self.project_title)
-        listed = self._query(["project", "list", "--owner", self.owner, "--format", "json", "--limit", "1000"])
+        listed = self._query(["project", "list", "--owner", self.owner, "--format", "json", "--limit", "100"])
         matches = [item for item in _records(listed) if item.get("title") == title]
         if matches:
             self._project = dict(matches[0])
+            project_config = self.config.get("project", {})
+            expected_description = project_config.get("description") if isinstance(project_config, Mapping) else None
+            self._managed_project = bool(expected_description and self._project.get("shortDescription") == expected_description)
             self.report.project = self._project
             self.report.action("project.exists", number=self._project.get("number"), title=title)
             return
@@ -367,6 +372,7 @@ class ProjectBootstrapper:
         self._project = dict(created or {"title": title, "number": "<new-project>", "id": "<new-project>"})
         self._project.setdefault("title", title)
         self._project_created = True
+        self._managed_project = True
         self.report.project = self._project
 
     def _ensure_project_settings(self) -> None:
@@ -400,10 +406,10 @@ class ProjectBootstrapper:
         number = str(self._project.get("number", "<new-project>"))
         if self.dry_run and number.startswith("<"):
             self._fields = {}
-            for name in ("Priority", "Phase", "Area", "Type", "Effort"):
+            for name in ("Priority", "Phase", "Area", "Work Type", "Effort"):
                 self.report.action("field.create", name=name, planned=True)
             return
-        fields_raw = self._query(["project", "field-list", number, "--owner", self.owner, "--format", "json", "--limit", "1000"])
+        fields_raw = self._query(["project", "field-list", number, "--owner", self.owner, "--format", "json", "--limit", "100"])
         fields = {str(item.get("name")): dict(item) for item in _records(fields_raw)}
         declared_fields = self.config.get("fields", {})
         values: dict[str, list[str]] = {
@@ -411,7 +417,7 @@ class ProjectBootstrapper:
             "Priority": list(FIELD_VALUES["Priority"]),
             "Phase": list(self.config["phases"]),
             "Area": sorted({epic["area"] for epic in self.config["epics"]}),
-            "Type": sorted({epic["type"] for epic in self.config["epics"]} | {child["type"] for epic in self.config["epics"] for child in epic["children"]}),
+            "Work Type": sorted({epic["type"] for epic in self.config["epics"]} | {child["type"] for epic in self.config["epics"] for child in epic["children"]}),
             "Effort": list(FIELD_VALUES["Effort"]),
         }
         if isinstance(declared_fields, Mapping):
@@ -425,7 +431,7 @@ class ProjectBootstrapper:
         if status and desired_status:
             current_status = [str(option.get("name")) for option in status.get("options", []) if isinstance(option, Mapping)]
             if current_status != desired_status:
-                if self._project_created:
+                if self._project_created or self._managed_project:
                     colors = ("GRAY", "BLUE", "YELLOW", "PURPLE", "RED", "GREEN")
                     options = ",".join(
                         "{name:%s,description:\"\",color:%s}" % (json.dumps(name), color)
@@ -453,7 +459,7 @@ class ProjectBootstrapper:
                 if isinstance(created, Mapping):
                     fields[name] = dict(created)
         if (created_any or status_changed) and not self.dry_run:
-            refreshed = self._query(["project", "field-list", number, "--owner", self.owner, "--format", "json", "--limit", "1000"])
+            refreshed = self._query(["project", "field-list", number, "--owner", self.owner, "--format", "json", "--limit", "100"])
             fields.update({str(item.get("name")): dict(item) for item in _records(refreshed)})
         self._fields = fields
 
@@ -470,7 +476,7 @@ class ProjectBootstrapper:
                 self.report.action("issue.exists", key=spec.key, number=found.get("number"))
                 self._ensure_issue_labels(found, spec)
                 return found
-        labels = [*spec.labels, f"myclaw/{'epic' if spec.epic_key is None else 'child'}/{spec.key}"]
+        labels = list(spec.labels)
         create_args = ["issue", "create", "--repo", self.repo, "--title", spec.title, "--body", spec.body]
         for label in labels:
             create_args.extend(["--label", label])
@@ -503,7 +509,7 @@ class ProjectBootstrapper:
         number = issue.get("number")
         if not isinstance(number, int):
             return
-        desired = [*spec.labels, f"myclaw/{'epic' if spec.epic_key is None else 'child'}/{spec.key}"]
+        desired = list(spec.labels)
         current = issue.get("labels", [])
         current_names = {item.get("name") for item in current if isinstance(item, Mapping)}
         current_names.update(item for item in current if isinstance(item, str))
@@ -540,11 +546,16 @@ class ProjectBootstrapper:
             self.report.action("project.item-add", key=spec.key, planned=True)
             self.report.action("project.fields.plan", key=spec.key)
             return
-        existing_raw = self._query(["project", "item-list", number, "--owner", self.owner, "--format", "json", "--limit", "1000"])
-        items = _records(existing_raw)
-        item = next((item for item in items if item.get("content", {}).get("number") == issue.get("number") or item.get("content", {}).get("url") == issue.get("url")), None)
+        if self._project_items is None:
+            existing_raw = self._query(["project", "item-list", number, "--owner", self.owner, "--format", "json", "--limit", "200"])
+            self._project_items = _records(existing_raw)
+        item = next((item for item in self._project_items if item.get("content", {}).get("number") == issue.get("number") or item.get("content", {}).get("url") == issue.get("url")), None)
         if item is None:
             item = self._mutate("project.item-add", ["project", "item-add", number, "--owner", self.owner, "--url", str(issue.get("url")), "--format", "json"], key=spec.key) or {"id": f"<new-item:{spec.key}>"}
+            if isinstance(item, Mapping):
+                cached_item = dict(item)
+                cached_item.setdefault("content", {"number": issue.get("number"), "url": issue.get("url")})
+                self._project_items.append(cached_item)
         else:
             self.report.action("project.item.exists", key=spec.key, item_id=item.get("id"))
         item_id = item.get("id") if isinstance(item, Mapping) else None
@@ -552,7 +563,7 @@ class ProjectBootstrapper:
         if not item_id or not project_id or str(item_id).startswith("<") or str(project_id).startswith("<"):
             self.report.action("project.fields.plan", key=spec.key)
             return
-        values = {"Status": spec.status, "Priority": spec.priority, "Phase": spec.phase, "Area": spec.area, "Type": spec.type, "Effort": spec.effort}
+        values = {"Status": spec.status, "Priority": spec.priority, "Phase": spec.phase, "Area": spec.area, "Work Type": spec.type, "Effort": spec.effort}
         for name, value in values.items():
             field_info = self._fields.get(name, {})
             field_id = field_info.get("id")
@@ -580,12 +591,10 @@ class ProjectBootstrapper:
         for epic in self.config["epics"]:
             for name in epic["labels"]:
                 label_specs.setdefault(name, {})
-            label_specs.setdefault(f"myclaw/epic/{epic['key']}", {})
             specs.append(IssueSpec(epic["key"], epic["title"], render_epic_body(epic), epic["labels"], None, epic["priority"], epic["area"], epic["phase"], epic["type"], epic["effort"], epic["status"]))
             for child in epic["children"]:
                 for name in child["labels"]:
                     label_specs.setdefault(name, {})
-                label_specs.setdefault(f"myclaw/child/{child['key']}", {})
                 specs.append(IssueSpec(child["key"], child["title"], render_child_body(child, epic["key"]), child["labels"], epic["key"], child["priority"], child["area"], child["phase"], child["type"], child["effort"], child["status"]))
         self._ensure_labels(label_specs)
         self._ensure_fields()
