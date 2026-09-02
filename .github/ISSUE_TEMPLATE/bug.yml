@@ -1,0 +1,45 @@
+name: Bug 报告
+description: 报告一个可以复现的错误或回归
+title: "[Bug] "
+labels: []
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简洁描述错误及其影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      value: "1. "
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: MyClaw 版本、操作系统、Python/Node 版本及相关配置。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志与证据
+      description: 请先删除 Token、API Key、个人信息和其他敏感数据。
+      render: shell
+

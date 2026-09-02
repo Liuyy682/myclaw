@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: MyClaw P0/P1 Roadmap
+    url: https://github.com/users/Liuyy682/projects
+    about: 先检查 Roadmap 中是否已有相同计划项，再创建新 Issue。
+

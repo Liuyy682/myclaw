@@ -1,0 +1,34 @@
+name: 调查任务
+description: 在实施前收敛一个技术或产品决策
+title: "[Research] "
+labels: ["type:research"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: 待回答问题
+      description: 调查最终需要支持什么决策？
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 所需证据
+      description: 需要检查哪些代码、测试、部署事实或权威资料？
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: 非实施边界
+      description: 本 Issue 只调查，不修改哪些系统或文件？
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: 完成标准
+      description: 什么结果意味着调查已经足以做出决定？
+    validations:
+      required: true
+

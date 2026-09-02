@@ -92,6 +92,26 @@ python -m pytest tests/agent/test_dispatcher.py
 python -m pytest tests/gateway/test_gateway.py
 ```
 
+### 初始化 GitHub Project
+
+仓库使用 `.github/project/myclaw-roadmap.yaml` 声明 P0/P1 Roadmap，并提供幂等的
+初始化脚本。脚本依赖官方 GitHub CLI；先完成登录并授予 `project` scope：
+
+```bash
+gh auth login
+gh auth refresh -s project
+```
+
+先执行只读预检，确认输出后再显式写入 GitHub：
+
+```bash
+python scripts/bootstrap_github_project.py --dry-run
+python scripts/bootstrap_github_project.py --apply
+```
+
+脚本不会删除线上对象，也不会覆盖人工修改后的 Issue 标题或正文。Project 的视图布局和
+内置 Workflows 仍需在 GitHub 页面完成一次配置。
+
 `npm run build` 会将生产环境资源输出到 `myclaw/web/dist`；该目录只包含构建产物，请勿手工修改。
 HTTP API 与 SSE 事件约定见 [docs/backend-api.md](docs/backend-api.md)。
 

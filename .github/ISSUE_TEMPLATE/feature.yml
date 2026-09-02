@@ -1,0 +1,42 @@
+name: 功能需求
+description: 提议一个范围明确、可验收的 MyClaw 功能
+title: "[Feature] "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题
+      description: 当前用户或系统遇到了什么具体问题？
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 目标行为
+      description: 完成后应观察到什么行为？
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与非范围
+      description: 明确本次包含和不包含的内容。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 使用 Markdown checklist 列出可验证条件。
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: 验证方法
+      description: 需要运行哪些测试、构建或人工检查？
+    validations:
+      required: true
+

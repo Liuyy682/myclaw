@@ -1,0 +1,586 @@
+version: 1
+
+project:
+  title: MyClaw Roadmap
+  owner: Liuyy682
+  repository: Liuyy682/myclaw
+  visibility: PUBLIC
+  description: MyClaw P0/P1 product roadmap and implementation tracking.
+
+fields:
+  Status: [Backlog, Ready, In progress, In review, Blocked, Done]
+  Priority: [P0, P1]
+  Area: [Security, Upload, Plan, Tasks, WebUI, Runtime, Memory, Cron, MCP, Skills, Observability, Settings]
+  Type: [Epic, Feature, Enhancement, Security, Reliability, Documentation, Research]
+  Effort: [XS, S, M, L, XL]
+  Phase: [Phase 1 - Core workflow, Phase 2 - Productization]
+
+labels:
+  - {name: "type:feature", color: "1D76DB", description: "User-visible product capability"}
+  - {name: "type:security", color: "B60205", description: "Authentication, authorization, and isolation"}
+  - {name: "type:reliability", color: "FBCA04", description: "Recovery, durability, retry, and idempotency"}
+  - {name: "type:docs", color: "0075CA", description: "Documentation"}
+  - {name: "type:research", color: "D4C5F9", description: "Decision-oriented investigation"}
+  - {name: "area:gateway", color: "5319E7", description: "HTTP Gateway and SSE"}
+  - {name: "area:webui", color: "0E8A16", description: "React WebUI"}
+  - {name: "area:agent", color: "006B75", description: "Agent runtime and execution loop"}
+  - {name: "area:storage", color: "C2E0C6", description: "Persistent storage and recovery"}
+  - {name: "area:memory", color: "BFD4F2", description: "Long-term and observational memory"}
+  - {name: "area:cron", color: "F9D0C4", description: "Scheduling and automation"}
+  - {name: "area:mcp", color: "D876E3", description: "MCP integrations"}
+  - {name: "area:skills", color: "A2EEEF", description: "Declarative skills"}
+  - {name: "area:observability", color: "FEF2C0", description: "Tracing, logs, and metrics"}
+
+epics:
+  - key: gateway-security
+    title: "[EPIC][P0] 建立 Gateway 安全访问与部署边界"
+    priority: P0
+    status: Ready
+    area: Security
+    type: Epic
+    effort: XL
+    phase: Phase 1 - Core workflow
+    labels: ["type:security", "area:gateway"]
+    summary: 当前 Gateway 暴露消息、会话、记忆和可观测性接口，但缺少完整的认证、身份隔离和公网部署安全边界。
+    outcome: 在允许外部渠道或公网访问前，建立可验证的认证、授权、限流、隔离与 readiness 契约。
+    out_of_scope: 本阶段不实现多用户组织、RBAC、多租户计费或分布式 Gateway。
+    children:
+      - key: auth-contract
+        title: 定义 Gateway 身份认证与安全主体契约
+        type: Security
+        effort: M
+        summary: 明确凭证解析、安全主体、会话归属、匿名访问和失败响应的统一契约。
+        acceptance: [所有受保护接口使用同一认证入口, 未认证与无权限请求返回稳定且不泄露信息的错误]
+        validation: [认证契约单元测试, API 错误响应测试]
+      - key: authenticated-entry
+        title: 为 Gateway API 增加认证入口
+        type: Security
+        effort: M
+        summary: 在消息、会话、记忆和可观测性 API 前执行认证，并保留明确的本地开发配置。
+        acceptance: [受保护路由拒绝缺失或无效凭证, 有效主体可继续使用现有 API]
+        validation: [Gateway 聚焦测试, 无凭证和错误凭证测试]
+      - key: subject-isolation
+        title: 将会话、审批和审计绑定到认证主体
+        type: Security
+        effort: L
+        summary: 防止一个主体读取或操作另一个主体的会话、审批和审计数据。
+        acceptance: [会话查询验证所有者, 审批和审计记录包含并校验 security subject]
+        validation: [跨主体越权测试, 现有会话兼容测试]
+      - key: edge-controls
+        title: 增加限流、连接限制和 Origin/CORS 策略
+        type: Security
+        effort: M
+        summary: 为 HTTP 请求和 SSE 连接建立有界资源与来源策略。
+        acceptance: [超限请求获得稳定 Retry-After 响应, 不受信任 Origin 无法调用受保护接口]
+        validation: [限流测试, SSE 连接上限和 Origin 测试]
+      - key: readiness
+        title: 分离 health 与 readiness 并报告关键依赖状态
+        type: Reliability
+        effort: M
+        summary: 保留存活探针，并由 readiness 报告 Provider、存储、MCP 和 Shell 沙箱是否可用。
+        acceptance: [health 只表示进程存活, ready 在关键依赖不可用时失败并提供脱敏状态]
+        validation: [依赖正常与故障注入测试]
+      - key: production-boundary
+        title: 强制生产 Shell 隔离并补齐公网部署文档
+        type: Security
+        effort: M
+        summary: 生产配置拒绝降级 Shell，并记录 HTTPS、反向代理、Secret 和低权限运行要求。
+        acceptance: [生产模式无法在无 sandbox 时启动高风险执行, 部署文档包含 TLS 和反向代理安全清单]
+        validation: [配置启动测试, 文档命令静态核对]
+
+  - key: attachments
+    title: "[EPIC][P1] 增加安全的工作区文件与附件"
+    priority: P1
+    status: Backlog
+    area: Upload
+    type: Epic
+    effort: XL
+    phase: Phase 1 - Core workflow
+    labels: ["type:feature", "area:gateway", "area:webui", "area:storage"]
+    summary: 用户当前必须在外部把文件放进 workspace，WebUI 没有安全上传和会话附件入口。
+    outcome: 用户可上传有界文件、绑定会话并通过附件 ID 让 Agent 在现有 workspace 权限内读取。
+    out_of_scope: 第一版不含分片上传、对象存储、ZIP 解压、PDF 解析或多模态模型输入。
+    children:
+      - key: contract
+        title: 定义附件元数据、附件 ID 与存储契约
+        type: Feature
+        effort: S
+        summary: 定义附件所有权、会话关系、状态、元数据和受限存储位置。
+        acceptance: [附件 ID 不暴露宿主绝对路径, 元数据包含原始文件名大小类型与所有者]
+        validation: [数据模型与序列化测试]
+      - key: upload-api
+        title: 增加有界且原子完成的附件上传 API
+        type: Feature
+        effort: M
+        summary: 使用临时文件写入并原子完成，失败时清理不完整文件。
+        acceptance: [服务端执行可配置大小限制, 成功响应返回附件 ID 和校验后的元数据]
+        validation: [成功上传和中断清理测试, 超大请求测试]
+      - key: validation
+        title: 校验附件名称、类型、大小与存储路径
+        type: Security
+        effort: M
+        summary: 防止绝对路径、路径穿越、危险覆盖和不受支持类型进入 workspace。
+        acceptance: [拒绝路径穿越和绝对路径, 客户端文件名不能决定最终存储路径]
+        validation: [恶意文件名和 MIME 边界测试]
+      - key: ownership-api
+        title: 绑定附件所有权并增加查询下载删除 API
+        type: Security
+        effort: M
+        summary: 附件访问必须同时满足安全主体和会话归属。
+        acceptance: [跨主体和跨会话访问被拒绝, 删除操作清理元数据和文件]
+        validation: [所有权与生命周期 API 测试]
+      - key: composer
+        title: 在聊天输入框增加拖拽上传与附件引用
+        type: Feature
+        effort: M
+        summary: 用户可选择或拖拽文件，并在消息中发送稳定附件引用。
+        acceptance: [输入框展示待发送附件, 消息只提交附件 ID 而非宿主路径]
+        validation: [WebUI 选择拖拽移除与发送测试]
+      - key: progress-cleanup
+        title: 展示上传进度、取消、重试并清理过期附件
+        type: Reliability
+        effort: M
+        summary: 上传失败状态可恢复，取消和过期任务不会遗留无限增长的临时文件。
+        acceptance: [UI 展示真实上传状态, 取消失败和过期附件均有确定清理语义]
+        validation: [重试取消和清理测试]
+      - key: end-to-end-tests
+        title: 增加附件 Gateway、存储、WebUI 测试与边界文档
+        type: Documentation
+        effort: M
+        summary: 验证完整附件闭环并明确第一版支持范围。
+        acceptance: [覆盖上传到 Agent 引用的聚焦测试, 文档列出限制权限和失败结果]
+        validation: [Python 聚焦测试, WebUI 测试与构建]
+
+  - key: plan-mode
+    title: "[EPIC][P1] 增加 Plan Mode 与任务图执行闭环"
+    priority: P1
+    status: Backlog
+    area: Plan
+    type: Epic
+    effort: XL
+    phase: Phase 1 - Core workflow
+    labels: ["type:feature", "area:agent", "area:webui"]
+    summary: 当前持久化 Task 图不是对话级 Plan Mode，缺少只读规划、修订审批和按步骤执行边界。
+    outcome: 建立 plan-review-apply 生命周期，并将批准计划转换为可恢复的现有 Task 图执行。
+    out_of_scope: 不实现自动批准、未知副作用自动重放或跨实例分布式计划执行。
+    children:
+      - key: schema
+        title: 定义 Plan、PlanRevision、PlanStep 与生命周期
+        type: Feature
+        effort: M
+        summary: 定义计划修订、步骤依赖、状态转换和持久化边界。
+        acceptance: [状态机拒绝非法转换, 每次修改生成稳定修订号]
+        validation: [模型和状态机测试]
+      - key: readonly-mode
+        title: 增加 Chat/Plan 模式并限制 Plan Mode 为只读工具
+        type: Security
+        effort: M
+        summary: Plan Mode 可调查和读取，但不能写文件、执行副作用 Shell 或外部发送。
+        acceptance: [用户可显式切换模式, Plan Mode 的工具策略拒绝所有副作用]
+        validation: [工具授权边界测试, 模式切换测试]
+      - key: structured-plan
+        title: 生成并持久化结构化计划草稿
+        type: Feature
+        effort: L
+        summary: 计划包含依赖、预计文件、工具、风险、验收标准，并能跨会话恢复。
+        acceptance: [无效依赖和缺失验收标准被拒绝, 计划草稿可保存和重新载入]
+        validation: [结构化输出和持久化测试]
+      - key: review-ui
+        title: 增加计划树、修订、拒绝与批准 UI
+        type: Feature
+        effort: L
+        summary: 用户可以审阅步骤、修改草稿并批准一个明确修订。
+        acceptance: [UI 展示依赖风险和验收标准, 批准绑定 plan_id 与 revision]
+        validation: [WebUI 计划审阅测试]
+      - key: task-conversion
+        title: 将批准 Plan 转换为现有持久化 Task 图
+        type: Feature
+        effort: M
+        summary: 保持任务依赖和单向状态机，并记录计划来源。
+        acceptance: [每个可执行步骤生成可追踪 Task, 转换重复调用不创建重复任务]
+        validation: [转换和幂等测试]
+      - key: execution-recovery
+        title: 按 PlanStep 执行并支持暂停取消重试恢复
+        type: Reliability
+        effort: L
+        summary: 每一步持久化实际状态；恢复时不自动重放未知外部副作用。
+        acceptance: [步骤完成后才解锁依赖, unknown 副作用进入人工确认而非自动重放]
+        validation: [暂停取消失败恢复和 unknown 测试]
+      - key: plan-tests
+        title: 增加 Plan 权限、状态机、恢复与 WebUI 测试
+        type: Reliability
+        effort: M
+        summary: 用确定性测试证明规划与执行权限没有混淆。
+        acceptance: [覆盖主要状态与失败路径, 测试区分计划完成和执行完成]
+        validation: [Python 和 WebUI 聚焦套件]
+
+  - key: workbench
+    title: "[EPIC][P1] 建立任务、会话与长执行工作台"
+    priority: P1
+    status: Backlog
+    area: Tasks
+    type: Epic
+    effort: XL
+    phase: Phase 1 - Core workflow
+    labels: ["type:feature", "area:webui", "area:agent", "area:gateway"]
+    summary: 现有任务、执行和会话能力缺少统一可视化、长任务控制和断线恢复。
+    outcome: 提供任务图、执行进度、会话管理和可恢复 SSE 的完整工作台。
+    out_of_scope: 不实现多人协作、跨设备同步或分布式事件总线。
+    children:
+      - key: tasks-page
+        title: 增加 Tasks 列表、依赖图与筛选页面
+        type: Feature
+        effort: L
+        summary: 展示任务状态、依赖、阻塞关系和当前可执行集合。
+        acceptance: [用户可按状态和项目筛选, 依赖和阻塞关系可视化]
+        validation: [Tasks API 与 WebUI 测试]
+      - key: task-management
+        title: 支持创建、编辑、取消任务并展示验收证据
+        type: Feature
+        effort: M
+        summary: 将任务管理和已有状态机对齐，并展示产物与验证结果。
+        acceptance: [UI 拒绝非法状态转换, 任务展示验收标准产物和验证证据]
+        validation: [状态转换和交互测试]
+      - key: task-links
+        title: 关联 Task、来源会话、Plan 与 Trace
+        type: Enhancement
+        effort: M
+        summary: 用户可以从任务追溯其来源、计划和真实执行轨迹。
+        acceptance: [关联标识稳定持久化, 任一页面可跳转到相关对象]
+        validation: [关联序列化和导航测试]
+      - key: execution-controls
+        title: 展示真实执行阶段并增加 Stop、Pause、Resume
+        type: Feature
+        effort: L
+        summary: 仅展示真实工具和状态事件，并对中断控制给出确定结果。
+        acceptance: [显示当前步骤和工具事件, Stop Pause Resume 与后端状态一致]
+        validation: [控制流程与 WebUI 测试]
+      - key: session-management
+        title: 增加会话重命名、删除、归档、搜索与导出
+        type: Feature
+        effort: M
+        summary: 用户可管理历史会话，并选择私密或关闭后清理的临时会话。
+        acceptance: [常规会话支持完整管理, 私密临时会话不进入长期记忆]
+        validation: [会话 API 和 UI 测试]
+      - key: sse-replay
+        title: 为 SSE 增加稳定事件 ID、游标恢复与去重
+        type: Reliability
+        effort: L
+        summary: 持久化终止和错误事件，使断线客户端可恢复且不重复渲染。
+        acceptance: [支持 Last-Event-ID 或等价游标, request trace event ID 联合去重]
+        validation: [断线重连丢包重复和过期窗口测试]
+      - key: workbench-tests
+        title: 增加会话、SSE replay 与长执行交互测试
+        type: Reliability
+        effort: M
+        summary: 覆盖工作台关键闭环和断线失败路径。
+        acceptance: [测试覆盖真实终止和错误恢复, 不把重连误判为执行重启]
+        validation: [Gateway 与 WebUI 聚焦套件]
+
+  - key: scheduler
+    title: "[EPIC][P1] 完善 Cron 调度与自动化管理"
+    priority: P1
+    status: Backlog
+    area: Cron
+    type: Epic
+    effort: XL
+    phase: Phase 2 - Productization
+    labels: ["type:feature", "type:reliability", "area:cron", "area:webui"]
+    summary: Cron 当前缺少完整 CRUD、执行历史、可靠 claim、失败策略和用户管理页面。
+    outcome: 提供单实例可靠、最小权限、可观察和可恢复的定时任务闭环。
+    out_of_scope: 不实现多实例分布式调度或完整 Kubernetes CronJob 替代方案。
+    children:
+      - key: crud
+        title: 增加 Cron 查询、更新、删除、暂停和立即运行
+        type: Feature
+        effort: M
+        summary: 补齐 cron_list/get/update/delete/run 以及暂停恢复入口。
+        acceptance: [所有操作遵循稳定状态契约, 立即运行不会改变后续计划时间]
+        validation: [Cron 工具与存储测试]
+      - key: calendar
+        title: 增加时区与常用日历规则
+        type: Feature
+        effort: M
+        summary: 支持用户可理解的每日每周工作日规则和明确时区。
+        acceptance: [下一次执行时间可预览, DST 和无效规则有确定结果]
+        validation: [时区和规则边界测试]
+      - key: durable-claim
+        title: 为 CronStore 增加并发安全更新与原子 claim
+        type: Reliability
+        effort: L
+        summary: 防止并发进程覆盖配置或重复领取同一次执行。
+        acceptance: [更新采用锁与原子写入, 同一 due occurrence 只有一个成功 claim]
+        validation: [并发更新和重复 claim 测试]
+      - key: concurrency-history
+        title: 增加单任务并发限制与执行历史
+        type: Reliability
+        effort: M
+        summary: 保存状态、错误、耗时、最后成功时间和当前运行标识。
+        acceptance: [同一任务并发受限, 历史记录可分页查询]
+        validation: [并发与历史存储测试]
+      - key: retry-policy
+        title: 增加失败重试、退避与连续失败暂停
+        type: Reliability
+        effort: M
+        summary: 短暂失败可控重试，持续失败不会无限消耗资源。
+        acceptance: [退避和最大尝试可配置, 连续失败达到阈值后暂停并记录原因]
+        validation: [时钟可控的重试测试]
+      - key: least-privilege-ui
+        title: 保留最小工具作用域并增加 Scheduler WebUI
+        type: Security
+        effort: L
+        summary: WebUI 管理任务但不能绕过 allowed tools 和 resource scopes。
+        acceptance: [页面展示下次运行和历史, 修改任务仍校验工具与资源作用域]
+        validation: [权限测试与 WebUI 测试]
+      - key: recovery-tests
+        title: 增加调度恢复、重复 claim 与失败重试测试
+        type: Reliability
+        effort: M
+        summary: 验证进程重启和竞争条件下的单实例可靠性。
+        acceptance: [恢复不会静默丢失 due job, 重复 claim 和越权工具均被拒绝]
+        validation: [集成聚焦套件]
+
+  - key: memory-recovery
+    title: "[EPIC][P1] 完善 Memory 管理与备份恢复"
+    priority: P1
+    status: Backlog
+    area: Memory
+    type: Epic
+    effort: XL
+    phase: Phase 2 - Productization
+    labels: ["type:feature", "type:reliability", "area:memory", "area:storage", "area:webui"]
+    summary: 当前长期记忆仅部分可见，Observation 状态和一致性备份恢复缺少统一产品入口。
+    outcome: 让记忆来源可追溯、变更可审计，并提供覆盖全部本地状态的一致性备份恢复能力。
+    out_of_scope: 不实现向量语义记忆、多租户数据隔离或云备份服务。
+    children:
+      - key: history-search
+        title: 增加长期记忆分页、搜索与来源历史 API
+        type: Feature
+        effort: M
+        summary: 用户可按关键词查找记忆并追溯来源会话和历史记录。
+        acceptance: [API 有界分页且不暴露越权内容, 每条持久事实显示可用来源]
+        validation: [分页搜索和来源测试]
+      - key: observation-status
+        title: 增加 Observation 与 Reflection 状态管理页面
+        type: Feature
+        effort: L
+        summary: 展示 safe watermark、失败任务和 reflection failure，并提供受控重试。
+        acceptance: [状态与 SQLite 真值一致, 失败重试不重复已成功事实]
+        validation: [Observation API 和 WebUI 测试]
+      - key: audited-editing
+        title: 支持受审计的记忆新增、编辑、删除和撤销
+        type: Security
+        effort: L
+        summary: 所有变更经过审批、来源记录和 Memory Git，而不是直接覆盖文件。
+        acceptance: [每次变更可追溯到主体和来源, 撤销产生新历史而非删除审计记录]
+        validation: [审批、Git 历史和撤销测试]
+      - key: memory-git-ui
+        title: 增加 Memory Git 历史查看
+        type: Enhancement
+        effort: M
+        summary: 展示记忆提交、变更原因和安全的差异预览。
+        acceptance: [历史读取不执行任意 Git 参数, 差异内容经过大小限制和脱敏]
+        validation: [历史 API 与 UI 测试]
+      - key: backup-restore
+        title: 增加一致性的 myclaw backup 与 restore
+        type: Reliability
+        effort: L
+        summary: 备份 sessions、transcripts、memory、tasks、cron 和 SQLite WAL 数据，并验证恢复目标。
+        acceptance: [备份有清单和完整性校验, restore 默认拒绝覆盖非空目标]
+        validation: [备份恢复往返和损坏归档测试]
+      - key: startup-report
+        title: 启动时报告 unknown operations 与未完成恢复项
+        type: Reliability
+        effort: M
+        summary: 汇总 unknown operations、abandoned traces 和未完成观察任务，并区分可恢复上下文与外部副作用。
+        acceptance: [报告不自动重放外部副作用, 用户可定位每个未知操作的审计记录]
+        validation: [重启恢复报告测试]
+      - key: recovery-tests
+        title: 增加备份完整性、恢复与记忆来源测试
+        type: Reliability
+        effort: M
+        summary: 用故障和往返用例验证备份与记忆审计闭环。
+        acceptance: [覆盖 WAL 一致性和损坏检测, 覆盖来源缺失和撤销路径]
+        validation: [存储和 Memory 聚焦套件]
+
+  - key: approvals
+    title: "[EPIC][P1] 建立工具审批与权限管理中心"
+    priority: P1
+    status: Backlog
+    area: Security
+    type: Epic
+    effort: XL
+    phase: Phase 2 - Productization
+    labels: ["type:security", "area:gateway", "area:webui", "area:agent"]
+    summary: 后端已有绑定审批和操作账本，但用户缺少统一查看、决策和恢复未知状态的入口。
+    outcome: 提供参数绑定、可审计、一次性消费且按会话和渠道隔离的审批中心。
+    out_of_scope: 第一版不提供无期限永久允许所有同类操作的规则。
+    children:
+      - key: pending-api
+        title: 增加待审批操作 API 与安全摘要
+        type: Feature
+        effort: M
+        summary: 返回工具、目标、参数摘要和审批原因，但不泄露 Secret 或无限制结果正文。
+        acceptance: [列表按安全主体隔离, 所有敏感值脱敏且保留决策所需目标]
+        validation: [API 隔离和脱敏测试]
+      - key: decisions
+        title: 支持允许一次、拒绝和取消审批
+        type: Security
+        effort: M
+        summary: 决策绑定精确调用并保持一次性消费语义。
+        acceptance: [参数变化后旧批准无效, 重复消费和过期批准被拒绝]
+        validation: [绑定过期重复消费测试]
+      - key: history-unknown
+        title: 展示已消费、过期与 unknown 审批操作
+        type: Reliability
+        effort: M
+        summary: 重启后用户能定位状态未知的外部副作用并人工处理。
+        acceptance: [unknown 不被显示为失败或成功, 每项关联审计和 operation ID]
+        validation: [重启与查询测试]
+      - key: scoped-policy
+        title: 增加会话级和渠道级工具策略
+        type: Security
+        effort: L
+        summary: 为写文件、Shell、网络和外部发送配置最小权限默认值。
+        acceptance: [渠道策略不能扩大主体权限, 高风险工具默认要求明确审批]
+        validation: [策略组合与越权测试]
+      - key: approval-ui
+        title: 增加工具审批中心 WebUI
+        type: Feature
+        effort: L
+        summary: 用户可查看风险、做出一次性决策并追踪最终结果。
+        acceptance: [UI 防止重复提交决策, 过期和 unknown 状态有明确文案]
+        validation: [WebUI 决策和并发更新测试]
+      - key: approval-tests
+        title: 增加重启、过期、参数变化和重复消费测试
+        type: Reliability
+        effort: M
+        summary: 验证 UI/API 不破坏现有 fail-closed PolicyGate 契约。
+        acceptance: [所有关键拒绝路径有确定性覆盖, 无审批存储时保持 fail closed]
+        validation: [安全聚焦测试]
+
+  - key: settings-center
+    title: "[EPIC][P1] 增加 Skills、MCP 和 Provider 设置中心"
+    priority: P1
+    status: Backlog
+    area: Settings
+    type: Epic
+    effort: XL
+    phase: Phase 2 - Productization
+    labels: ["type:feature", "area:skills", "area:mcp", "area:webui"]
+    summary: Skills、MCP 和 Provider 已有代码入口，但主要依赖文件或 CLI，缺少安全管理与状态页面。
+    outcome: 提供本地、可审计、凭证脱敏且不会绕过现有审批的设置中心。
+    out_of_scope: 第一版不含 MCP HTTP/OAuth、Marketplace 或自动安装 Skill 依赖。
+    children:
+      - key: skills-api
+        title: 增加 Skills 列表、详情、启用禁用与校验 API
+        type: Feature
+        effort: M
+        summary: 暴露 Catalog 的有效状态、格式错误和平台兼容信息。
+        acceptance: [无效 Skill 不影响其他 Skill, API 不允许越界读取 Skill 根目录]
+        validation: [Catalog API 和路径安全测试]
+      - key: skills-reload-ui
+        title: 增加受控 Skill 热重载与管理 WebUI
+        type: Feature
+        effort: L
+        summary: 用户可查看启停 Skill，并在配置变化后显式重载 Catalog。
+        acceptance: [重载失败保留旧有效 Catalog, UI 展示来源状态和错误]
+        validation: [热重载回滚和 WebUI 测试]
+      - key: mcp-status-api
+        title: 增加 MCP Server 状态、健康与工具列表 API
+        type: Feature
+        effort: M
+        summary: 展示本地 stdio Server 生命周期、注册工具和脱敏错误日志。
+        acceptance: [工具列表与 Registry 一致, 状态接口不暴露环境凭证]
+        validation: [Fake MCP 生命周期和脱敏测试]
+      - key: mcp-management
+        title: 增加 MCP 配置、批准、撤销、重连与工具 allow/deny
+        type: Security
+        effort: L
+        summary: 配置变化必须重新批准，并支持 Server 级工具限制与超时。
+        acceptance: [配置哈希变化使旧批准失效, 禁用工具无法通过远程 schema 绕过]
+        validation: [批准重连超时和工具限制测试]
+      - key: provider-settings
+        title: 增加 Provider、模型、Base URL 与能力设置
+        type: Feature
+        effort: L
+        summary: 支持模型选择、连接测试和文本工具调用等能力状态。
+        acceptance: [设置更新有验证和明确失败结果, 不兼容能力不会静默启用]
+        validation: [Provider 配置与 Fake 连接测试]
+      - key: secret-storage
+        title: 安全保存并始终脱敏展示 API Key
+        type: Security
+        effort: M
+        summary: API Key 只能写入安全存储，任何读取、日志和 Trace 均不得返回原值。
+        acceptance: [响应仅展示脱敏状态, 日志和错误不包含 Secret]
+        validation: [Secret 泄漏回归测试]
+      - key: settings-tests
+        title: 增加 Skills、MCP 与 Provider 设置中心测试
+        type: Reliability
+        effort: M
+        summary: 覆盖配置生命周期、回滚、权限和 WebUI 状态。
+        acceptance: [主要成功和失败路径均有聚焦测试, 设置失败不破坏当前运行配置]
+        validation: [Python 与 WebUI 聚焦套件]
+
+  - key: observability-links
+    title: "[EPIC][P1] 完善执行监控与可观测性关联"
+    priority: P1
+    status: Backlog
+    area: Observability
+    type: Epic
+    effort: XL
+    phase: Phase 2 - Productization
+    labels: ["type:feature", "area:observability", "area:webui", "area:agent"]
+    summary: Trace 和日志已经存在，但消息、任务、Plan、模型用量和恢复入口尚未形成统一关联。
+    outcome: 从用户操作追溯到真实执行与验证证据，同时保持默认脱敏和有界保留。
+    out_of_scope: 不实现外部 SaaS APM、跨实例 Trace 或 Prometheus/OpenTelemetry 导出。
+    children:
+      - key: correlation
+        title: 关联聊天消息、request ID、Trace、Plan 与 Task
+        type: Enhancement
+        effort: M
+        summary: 建立稳定关联字段并支持双向导航。
+        acceptance: [关联跨重启持久化, 缺失对象时显示明确降级状态]
+        validation: [关联序列化和查询测试]
+      - key: trace-navigation
+        title: 从消息和任务跳转到 Trace
+        type: Feature
+        effort: M
+        summary: WebUI 从用户可见对象进入真实 Trace 和 Span 瀑布图。
+        acceptance: [导航使用稳定 trace ID, 无权查看的 Trace 不被泄露]
+        validation: [路由和授权测试]
+      - key: execution-details
+        title: 展示执行阶段、工具耗时与失败原因
+        type: Feature
+        effort: M
+        summary: 展示真实完成事件而非模型隐式思维，并提供安全折叠详情。
+        acceptance: [阶段来自运行事件, 工具参数结果遵循大小限制和脱敏]
+        validation: [事件映射和脱敏测试]
+      - key: model-usage
+        title: 展示模型调用、Token 与上下文预算统计
+        type: Feature
+        effort: M
+        summary: 汇总 Provider 用量和 Context Budget，缺失计量时明确标记未知。
+        acceptance: [统计不伪造缺失数据, 会话与 Trace 聚合口径一致]
+        validation: [用量聚合测试]
+      - key: retry-evidence
+        title: 增加失败恢复入口与结构化验证证据摘要
+        type: Reliability
+        effort: L
+        summary: 用户可从失败 Trace 进入安全重试或人工确认，并查看测试和产物证据。
+        acceptance: [重试不自动重放 unknown 副作用, 摘要区分已验证和未验证]
+        validation: [恢复入口和证据摘要测试]
+      - key: summary-boundary
+        title: 完善 observability summary 与 readiness 边界
+        type: Reliability
+        effort: M
+        summary: 监控摘要说明历史运行状态，readiness 只说明当前依赖可接收工作。
+        acceptance: [两个接口语义不混淆, 查询有界且遵循保留策略]
+        validation: [summary 与 readiness 契约测试]
+      - key: observability-tests
+        title: 增加 Trace 关联、脱敏与 WebUI 测试
+        type: Reliability
+        effort: M
+        summary: 覆盖关联缺失、Secret、超长结果和错误恢复场景。
+        acceptance: [敏感值不进入 API 或 UI, 关联失败不影响主执行链]
+        validation: [Observability 与 WebUI 聚焦套件]
