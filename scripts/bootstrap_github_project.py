@@ -542,6 +542,8 @@ class ProjectBootstrapper:
         except GhError:
             current = {}
         subissues = current.get("subIssues", []) if isinstance(current, Mapping) else []
+        if isinstance(subissues, Mapping):
+            subissues = subissues.get("nodes", [])
         if any(item.get("number") == child_number for item in subissues if isinstance(item, Mapping)):
             self.report.action("subissue.exists", parent=parent.get("key"), child=child.get("key"))
             return

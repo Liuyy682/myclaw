@@ -62,7 +62,7 @@ class FakeGh:
             if args[2].startswith("https://"):
                 number = int(args[2].rsplit("/", 1)[1])
                 return json.dumps({"id": f"I-{number}", "number": number, "title": "created", "body": "<!-- myclaw-roadmap:E-001 -->", "url": args[2]})
-            return json.dumps({"subIssues": [], "id": "I-1"})
+            return json.dumps({"subIssues": {"nodes": [], "totalCount": 0}, "id": "I-1"})
         if args[:2] == ["project", "create"]:
             return json.dumps({"id": "P-1", "number": 7, "title": "MyClaw Roadmap"})
         if args[:2] in (["project", "edit"], ["project", "link"]):
