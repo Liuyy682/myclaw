@@ -88,6 +88,8 @@ async def send_response(
         200: "OK",
         202: "Accepted",
         400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
         409: "Conflict",

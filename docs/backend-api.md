@@ -8,6 +8,38 @@ python -m myclaw gateway
 
 The default base URL is `http://127.0.0.1:8765`. All JSON responses use UTF-8.
 
+## Authentication contract
+
+Gateway authentication uses the `Authorization: Bearer <credential>` request
+header. Credentials are opaque and are resolved by the server to an immutable
+security subject. Client-supplied subject or identity fields are never trusted,
+and raw credentials must not be copied into logs, message metadata, or persisted
+data.
+
+Protected endpoints use one authentication entry point. A missing, malformed,
+or invalid credential returns HTTP `401`, the `WWW-Authenticate: Bearer` header,
+and a stable response that does not reveal why authentication failed:
+
+```json
+{"error":"authentication required","code":"unauthenticated"}
+```
+
+An authenticated subject attempting to access a resource owned by another
+subject receives HTTP `403` with no indication whether that resource exists:
+
+```json
+{"error":"forbidden","code":"forbidden"}
+```
+
+Health checks and static WebUI assets may remain anonymous. All other `/api/*`
+routes are intended to be protected when authentication is connected in the
+next Gateway security change. This contract alone does not yet change existing
+route behavior.
+
+Session ownership is based on a server-persisted subject identifier, not on a
+client-provided `chat_id` or `session_key`. Persisting and enforcing that
+ownership is handled by the later subject-isolation change.
+
 ## Health
 
 `GET /api/health` returns `{"status":"ok"}` with HTTP `200`. This only confirms
