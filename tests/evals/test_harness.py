@@ -281,10 +281,9 @@ def test_harness_persists_task_tool_state_in_temp_workspace(tmp_path):
         dataset,
         {
             "case_id": "task-persist",
-            "prompt": "Create a task",
+            "prompt": "/plan new Create a task",
             "expected": {
                 "tool_sequence": ["task_create"],
-                "file_exists": ["tasks/tasks.json"],
                 "final_contains": ["persisted"],
             },
         },
@@ -301,7 +300,10 @@ def test_harness_persists_task_tool_state_in_temp_workspace(tmp_path):
 
     assert result.exit_code == 0
     run = result.runs[0]
-    assert "tasks/tasks.json" in run["final_state"]["workspace_files"]
+    files = run["final_state"]["workspace_files"]
+    project_files = [name for name in files if name.startswith("tasks/projects/") and name.endswith(".json")]
+    assert len(project_files) == 1
+    assert json.loads(files[project_files[0]])["tasks"][0]["title"] == "eval task"
     assert "task_create" in run["allowed_tools"]
 
 

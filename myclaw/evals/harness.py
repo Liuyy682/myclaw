@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from myclaw.agent import AgentConfig, AgentLoop
+from myclaw.agent.types import RunResult
 from myclaw.config import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
@@ -282,6 +283,17 @@ async def _run_case(
                     content = getattr(turn, "content", "")
                 if role == "user":
                     try:
+                        # Replay explicit user mode commands through the same
+                        # controller used by the dispatcher, never as model text.
+                        action = content.strip().split(maxsplit=1)[0].lower() if content.strip() else ""
+                        if action in {"/plan", "/plans", "/execute", "/exit-plan"}:
+                            command_result = loop.plan_command(session_key, content)
+                            if command_result.run_prompt is None:
+                                result = RunResult(
+                                    content=command_result.content, messages=[], model=getattr(provider, "model", ""),
+                                )
+                                continue
+                            content = command_result.run_prompt
                         result = await loop.run(
                             content,
                             session_key=session_key,

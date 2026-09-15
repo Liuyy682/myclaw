@@ -206,7 +206,7 @@ def test_registry_redacts_pydantic_validation_details_to_one_line():
 def test_all_default_local_tools_and_skill_load_use_input_models(tmp_path):
     registry = build_default_tool_registry(tmp_path)
 
-    assert len(registry) == 20
+    assert len(registry) == 21
     assert all(getattr(registry.get(name), "input_model", None) is not None for name in registry.tool_names)
 
     skill_tool = SkillLoadTool(SkillCatalog.discover(tmp_path / "skills"))

@@ -269,6 +269,12 @@ class HttpGatewayServer:
         reason: str | None,
         retry_after_seconds: int | None,
     ) -> None:
+        if reason == "mode_switch_busy":
+            await _send_json(writer, 409, {
+                "error": "Cannot switch plan mode while a turn is running or queued. Use /stop or wait.",
+                "code": "mode_switch_busy",
+            })
+            return
         is_session_full = reason == "session_queue_full"
         retry_after = retry_after_seconds or (5 if is_session_full else 1)
         await _send_json(

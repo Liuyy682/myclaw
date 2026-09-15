@@ -79,7 +79,7 @@ class _NoopObservability:
 class AgentDispatcher:
     """Continuously bridge inbound bus messages to outbound agent responses."""
 
-    _CONTROL_COMMANDS = {"/clear", "/status", "/stop"}
+    _CONTROL_COMMANDS = {"/clear", "/status", "/stop", "/plans", "/exit-plan"}
     _AUTO_COMPACT_IDLE_TICK_SECONDS = 1.0
 
     def __init__(self, bus: MessageBus, loop: AgentLoop, *, limits: DispatcherLimits | None = None) -> None:
@@ -98,6 +98,18 @@ class AgentDispatcher:
         """Admit a user message without allowing unbounded waiting tasks."""
         command = self._control_command(msg.content)
         if command is not None:
+            if self._is_mode_turn(command):
+                if self._session_is_busy(msg.session_key):
+                    await self._publish_rejection(msg, "mode_switch_busy")
+                    return SubmissionResult(False, reason="mode_switch_busy")
+                result = self._reserve_agent_request(msg)
+                if not result.accepted:
+                    await self._publish_rejection(msg, result.reason or "service_overloaded")
+                    return result
+                state = msg._dispatch_state
+                assert state is not None
+                self._schedule_task(self._process_mode_message(msg, state))
+                return result
             self._schedule_task(self._process_control_message(msg, command))
             return SubmissionResult(True)
         if self.ask.submit_answer(msg.session_key, msg.content):
@@ -150,6 +162,18 @@ class AgentDispatcher:
     async def _process_message(self, msg: InboundMessage) -> None:
         command = self._control_command(msg.content)
         if command is not None:
+            if self._is_mode_turn(command):
+                if self._session_is_busy(msg.session_key):
+                    await self._publish_rejection(msg, "mode_switch_busy")
+                    return
+                admission = self._reserve_agent_request(msg)
+                if not admission.accepted:
+                    await self._publish_rejection(msg, admission.reason or "service_overloaded")
+                    return
+                state = msg._dispatch_state
+                assert state is not None
+                await self._process_mode_message(msg, state)
+                return
             await self._process_control_message(msg, command)
             return
 
@@ -167,6 +191,26 @@ class AgentDispatcher:
                 return
             state = msg._dispatch_state
         await self._process_agent_message(msg, state)
+
+    async def _process_mode_message(self, msg: InboundMessage, state: _SessionDispatchState) -> None:
+        """Transition mode, then run the resulting prompt under normal admission."""
+        command = self._control_command(msg.content) or msg.content
+        delegated = False
+        try:
+            outcome = self.loop.plan_command(msg.session_key, command)
+            if outcome.run_prompt is None:
+                await self._publish_control(msg, outcome.content, msg.metadata)
+                return
+            await self._publish_control(msg, outcome.content, msg.metadata, terminal=False)
+            delegated = True
+            await self._process_agent_message(msg, state, run_content=outcome.run_prompt)
+        except Exception as exc:
+            logger.exception("Plan command failed for %s", msg.session_key)
+            await self._publish_control(msg, f"Error: {exc}", msg.metadata)
+        finally:
+            if not delegated:
+                self._release_reserved_request(msg.session_key, state)
+                msg._dispatch_state = None
 
     def _check_auto_compact(self) -> None:
         auto_compact = getattr(self.loop, "auto_compact", None)
@@ -255,7 +299,13 @@ class AgentDispatcher:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _process_agent_message(self, msg: InboundMessage, state: _SessionDispatchState) -> None:
+    async def _process_agent_message(
+        self,
+        msg: InboundMessage,
+        state: _SessionDispatchState,
+        *,
+        run_content: str | None = None,
+    ) -> None:
         metadata = dict(msg.metadata)
         trace_id = str(metadata.get("trace_id") or "")
         if not trace_id and self.observability.config.enabled:
@@ -311,7 +361,7 @@ class AgentDispatcher:
                             }
                             if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
                                 run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta, metadata)
-                            result = await self.loop.run(msg.content, **run_kwargs)
+                            result = await self.loop.run(run_content or msg.content, **run_kwargs)
                             content = result.content
                             if getattr(result, "error", None):
                                 trace.set_error(result.error, error_type="AgentRunError")
@@ -350,9 +400,25 @@ class AgentDispatcher:
         normalized = command.lower()
         if normalized in cls._CONTROL_COMMANDS:
             return normalized
+        if normalized == "/execute":
+            return normalized
+        if normalized == "/plan" or normalized.startswith("/plan "):
+            return command
         if normalized.startswith("/om:"):
             return command
         return None
+
+    @staticmethod
+    def _is_mode_turn(command: str) -> bool:
+        normalized = command.strip().lower()
+        return (
+            normalized in {"/execute", "/exit-plan", "/plan"}
+            or normalized.startswith("/plan ")
+        )
+
+    def _session_is_busy(self, session_key: str) -> bool:
+        state = self._session_states.get(session_key)
+        return state is not None and state.ref_count > 0
 
     async def _process_control_message(self, msg: InboundMessage, command: str) -> None:
         metadata = dict(msg.metadata)
@@ -372,6 +438,10 @@ class AgentDispatcher:
                     if callable(handler)
                     else "Observation memory is unavailable."
                 )
+            elif command == "/plans":
+                handler = getattr(self.loop, "plan_command", None)
+                outcome = handler(msg.session_key, command) if callable(handler) else None
+                content = getattr(outcome, "content", "Plan mode is unavailable.")
             elif command == "/status":
                 content = self._session_status(msg.session_key)
             elif command == "/stop":
@@ -409,11 +479,25 @@ class AgentDispatcher:
         task = self._active_session_tasks.get(session_key)
         if task is not None and not task.done():
             return "Cannot clear the current session while a turn is running. Use /stop first."
+        session_manager = getattr(self.loop, "session_manager", None)
+        existing = session_manager.get_or_create(session_key) if session_manager is not None else None
+        plan_metadata = {}
+        if existing is not None:
+            plan_metadata = {
+                key: existing.metadata[key]
+                for key in ("agent_mode", "current_plan_id", "project_id")
+                if key in existing.metadata
+            }
         self.loop.reset_session(session_key)
+        if plan_metadata and session_manager is not None:
+            restored = session_manager.get_or_create(session_key)
+            restored.metadata.update(plan_metadata)
+            session_manager.save(restored)
         return "Cleared current session."
 
     async def _publish_control(
-        self, msg: InboundMessage, content: str, base_metadata: dict | None = None
+        self, msg: InboundMessage, content: str, base_metadata: dict | None = None,
+        *, terminal: bool = True,
     ) -> None:
         await self.bus.publish_outbound(
             OutboundMessage(
@@ -421,6 +505,7 @@ class AgentDispatcher:
                 chat_id=msg.chat_id,
                 content=content,
                 metadata=dict(base_metadata or msg.metadata),
+                terminal=terminal,
                 event_type="control",
             )
         )
@@ -504,6 +589,7 @@ class AgentDispatcher:
             "service_overloaded": "Error: Service is busy. Please retry later.",
             "session_queue_full": "Error: This session already has too many queued requests.",
             "queue_timeout": "Error: Request timed out while waiting in the queue.",
+            "mode_switch_busy": "Cannot switch plan mode while this session has a running or queued turn; stop it or wait.",
         }[reason]
         logger.warning(
             "dispatcher_rejected reason=%s pending=%s session_key=%s",

@@ -15,7 +15,7 @@ from typing import Any
 
 from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
-from myclaw.tasks import TaskStore
+from myclaw.tasks import ProjectPlanStore, TaskStore
 from myclaw.tools import (
     AskUserTool,
     CronTool,
@@ -25,6 +25,7 @@ from myclaw.tools import (
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
+    TaskProgressTool,
     TaskUpdateTool,
     ToolRegistry,
     SecurityStore,
@@ -106,6 +107,9 @@ class EvalToolRegistry:
     def prepare_call(self, request):
         return self._registry.prepare_call(request)
 
+    def scoped(self, allowed_names: set[str]) -> _ScopedEvalToolRegistry:
+        return _ScopedEvalToolRegistry(self, allowed_names)
+
     async def execute(self, request, *, max_result_chars=None, context=None) -> str:
         self.call_count += 1
         should_inject = (
@@ -126,7 +130,9 @@ class EvalToolRegistry:
             subject=base_context.subject or "internal:eval",
             security_subject=base_context.security_subject or "internal:eval",
             approval_callback=lambda *_: "allow",
-            allowed_tools=self.tool_names,
+            allowed_tools=sorted(set(self.tool_names).intersection(
+                base_context.allowed_tools if base_context.allowed_tools is not None else self.tool_names
+            )),
             resource_scopes=[str(self._fixture_root)],
         )
         result = await self._registry.execute(
@@ -150,6 +156,38 @@ class EvalToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._registry
+
+
+class _ScopedEvalToolRegistry:
+    """Filter model tools without discarding the evaluation execution wrapper."""
+
+    def __init__(self, parent: EvalToolRegistry, allowed_names: set[str]) -> None:
+        self.parent = parent
+        self.allowed_names = set(parent.tool_names).intersection(allowed_names)
+
+    @property
+    def tool_names(self) -> list[str]:
+        return sorted(self.allowed_names)
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return [entry for entry in self.parent.definitions()
+                if entry["function"]["name"] in self.allowed_names]
+
+    def get(self, name: str) -> Any:
+        return self.parent.get(name) if name in self.allowed_names else None
+
+    def __len__(self) -> int:
+        return len(self.allowed_names)
+
+    def prepare_call(self, request):
+        if request.name not in self.allowed_names:
+            return None, {}, f"Error: Tool '{request.name}' is outside the mode scope"
+        return self.parent.prepare_call(request)
+
+    async def execute(self, request, *, max_result_chars=None, context=None) -> str:
+        if request.name not in self.allowed_names:
+            return f"Error: Tool '{request.name}' is outside the mode scope"
+        return await self.parent.execute(request, max_result_chars=max_result_chars, context=context)
 
 
 def build_fixture_registry(
@@ -280,16 +318,18 @@ def build_fixture_registry(
             effect="local_read",
         )
     )
-    task_store = TaskStore(state_root)
+    task_store = ProjectPlanStore(state_root, root)
+    legacy_store = TaskStore(state_root)
     cron_store = CronStore(state_root)
     registry.register(AskUserTool())
     registry.register(CronTool(cron_store))
     registry.register(MemoryWriteTool(MemoryStore(state_root)))
     registry.register(SpawnTool())
     registry.register(TaskCreateTool(task_store))
-    registry.register(TaskGetTool(task_store))
-    registry.register(TaskListTool(task_store))
+    registry.register(TaskGetTool(task_store, legacy_store))
+    registry.register(TaskListTool(task_store, legacy_store))
     registry.register(TaskUpdateTool(task_store))
+    registry.register(TaskProgressTool(task_store))
 
     for name in disabled_tools or []:
         registry.unregister(str(name))

@@ -186,6 +186,7 @@ def test_default_tool_registry_contains_default_tools_in_stable_order(tmp_path):
         "task_create",
         "task_get",
         "task_list",
+        "task_progress",
         "task_update",
         "web_fetch",
         "web_search",

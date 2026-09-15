@@ -33,7 +33,7 @@ from myclaw.tools.self import MyTool
 from myclaw.tools.shell import ExecTool
 from myclaw.tools.skill import SkillLoadTool
 from myclaw.tools.spawn import SpawnTool
-from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
+from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskProgressTool, TaskUpdateTool
 from myclaw.tools.web import WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -56,6 +56,7 @@ __all__ = [
     "TaskCreateTool",
     "TaskGetTool",
     "TaskListTool",
+    "TaskProgressTool",
     "TaskUpdateTool",
     "Tool",
     "ToolCallRequest",

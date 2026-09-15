@@ -26,7 +26,7 @@ def build_default_tool_registry(
     state_workspace: Path | str | None = None,
 ) -> ToolRegistry:
     from myclaw.cron import CronStore
-    from myclaw.tasks import TaskStore
+    from myclaw.tasks import ProjectPlanStore, TaskStore
     from myclaw.tools.ask import AskUserTool
     from myclaw.tools.cron import CronTool
     from myclaw.tools.message import MessageTool
@@ -34,13 +34,14 @@ def build_default_tool_registry(
     from myclaw.tools.self import MyTool
     from myclaw.tools.shell import ExecTool
     from myclaw.tools.spawn import SpawnTool
-    from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
+    from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskProgressTool, TaskUpdateTool
     from myclaw.tools.web import WebFetchTool, WebSearchTool
 
     root = Path(workspace).expanduser() if workspace is not None else Path.cwd()
     memory_root = Path(memory_workspace).expanduser() if memory_workspace is not None else root
     state_root = Path(state_workspace).expanduser() if state_workspace is not None else memory_root
-    task_store = TaskStore(state_root)
+    plan_store = ProjectPlanStore(state_root, root)
+    legacy_task_store = TaskStore(state_root)
     cron_store = CronStore(state_root)
     # Keep approvals, operation replay guards, and audit metadata in the
     # workspace security database so all built-in tools (including Dream and
@@ -62,10 +63,11 @@ def build_default_tool_registry(
     registry.register(NotebookEditTool(root))
     registry.register(MemoryWriteTool(MemoryStore(memory_root)))
     registry.register(SpawnTool())
-    registry.register(TaskCreateTool(task_store))
-    registry.register(TaskGetTool(task_store))
-    registry.register(TaskListTool(task_store))
-    registry.register(TaskUpdateTool(task_store))
+    registry.register(TaskCreateTool(plan_store))
+    registry.register(TaskGetTool(plan_store, legacy_task_store))
+    registry.register(TaskListTool(plan_store, legacy_task_store))
+    registry.register(TaskProgressTool(plan_store))
+    registry.register(TaskUpdateTool(plan_store))
     registry.register(WebFetchTool())
     registry.register(WebSearchTool())
     registry.register(WriteFileTool(root))

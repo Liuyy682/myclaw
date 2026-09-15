@@ -11,9 +11,9 @@ from myclaw.tools.notebook import NotebookEditTool
 from myclaw.tools.self import MyTool
 from myclaw.tools.shell import ExecTool, _detect_bwrap
 from myclaw.tools.spawn import SpawnTool
-from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool
+from myclaw.tools.tasks import TaskCreateTool, TaskGetTool, TaskListTool, TaskProgressTool
 from myclaw.tools.web import WebFetchTool, WebSearchTool
-from myclaw.tasks import TaskStore
+from myclaw.tasks import ProjectPlanStore
 from myclaw.cron import CronStore
 from myclaw.tools.base import ToolRuntimeContext, tool_context
 
@@ -193,23 +193,33 @@ def test_notebook_edit_replaces_existing_cell_source(tmp_path):
 
 
 def test_task_tools_persist_create_list_get_and_update(tmp_path):
-    store = TaskStore(tmp_path)
-    created = asyncio.run(TaskCreateTool(store).execute(title="Ship tools", description="Add parity"))
-    task_id = created["id"]
-
-    listed = asyncio.run(TaskListTool(store).execute())
-    fetched = asyncio.run(TaskGetTool(store).execute(id=task_id))
-    # Status follows the one-way machine: pending -> in_progress -> completed.
-    asyncio.run(TaskUpdateTool(store).execute(id=task_id, status="in_progress"))
-    updated = asyncio.run(TaskUpdateTool(store).execute(id=task_id, status="completed"))
-    reloaded = TaskStore(tmp_path).get(task_id)
+    store = ProjectPlanStore(tmp_path, tmp_path / "code")
+    plan = store.create_plan("Ship tools", "cli:test")
+    context = ToolRuntimeContext(session_key="cli:test", metadata={
+        "agent_mode": "plan", "current_plan_id": plan["id"], "project_id": store.project_id,
+    })
+    with tool_context(context):
+        created = asyncio.run(TaskCreateTool(store).execute(
+            title="Ship tools", description="Add parity", acceptance_criteria="Tool tests pass",
+        ))
+        task_id = created["id"]
+        listed = asyncio.run(TaskListTool(store).execute())
+        fetched = asyncio.run(TaskGetTool(store).execute(id=task_id))
+        store.confirm_plan(plan["id"], "cli:test")
+        context.metadata["agent_mode"] = "execute"
+        asyncio.run(TaskProgressTool(store).execute(id=task_id, status="in_progress"))
+        updated = asyncio.run(TaskProgressTool(store).execute(
+            id=task_id, status="completed", progress="Tool tests passed",
+        ))
+    reloaded = ProjectPlanStore(tmp_path, tmp_path / "code").get_task(task_id)
 
     assert created["status"] == "pending"
     assert listed["tasks"][0]["id"] == task_id
     assert fetched["title"] == "Ship tools"
     assert updated["status"] == "completed"
     assert reloaded["status"] == "completed"
-    assert (tmp_path / "tasks" / "tasks.json").exists()
+    assert reloaded["progress"] == "Tool tests passed"
+    assert store.path.exists()
 
 
 def test_cron_tool_persists_supported_schedules_and_rejects_full_cron(tmp_path):

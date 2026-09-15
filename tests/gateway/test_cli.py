@@ -473,6 +473,7 @@ def test_build_agent_loop_registers_default_tools(tmp_path, monkeypatch):
         "task_create",
         "task_get",
         "task_list",
+        "task_progress",
         "task_update",
         "web_fetch",
         "web_search",

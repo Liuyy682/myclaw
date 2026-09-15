@@ -21,6 +21,7 @@ def test_builtin_tools_expose_explicit_security_metadata(tmp_path):
         "task_create": (False, False, "local_write"),
         "task_get": (True, False, "local_read"),
         "task_list": (True, False, "local_read"),
+        "task_progress": (False, True, "local_write"),
         "task_update": (False, True, "local_write"),
         "web_fetch": (True, False, "network_read"),
         "web_search": (True, False, "network_read"),

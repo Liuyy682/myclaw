@@ -15,6 +15,7 @@ from myclaw.agent.context import (
 )
 from myclaw.agent.dream import DreamManager
 from myclaw.agent.runner import AgentRunner
+from myclaw.agent.planning import EXECUTE_GRAPH_WRITE_TOOLS, PLAN_TOOLS, PlanCommand
 from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallback, RunResult, StreamCallback
 from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
@@ -199,6 +200,7 @@ class AgentLoop:
 
         with self.observability.span("context.prepare", "agent") as prepare_span:
             session = self.session_manager.get_or_create(session_key)
+            self._sync_plan_metadata(session_key, session)
             if self._restore_incomplete_turn(session):
                 self.session_manager.save(session)
             compacted = False
@@ -242,6 +244,12 @@ class AgentLoop:
                 user_memory_text,
                 soul_text,
             )
+            mode_prompt = self._mode_prompt(session)
+            if mode_prompt:
+                messages.insert(1 if messages and messages[0].get("role") == "system" else 0, {
+                    "role": "system",
+                    "content": mode_prompt,
+                })
             build_span.set_attribute("message_count", len(messages))
             build_span.set_attribute("input_chars", len(user_text))
         with self.observability.span("session.persist_input", "storage"):
@@ -302,6 +310,9 @@ class AgentLoop:
         if allowed is None:
             return parent
         allowed_names = {str(name) for name in allowed}
+        scoped_factory = getattr(parent, "scoped", None)
+        if callable(scoped_factory):
+            return scoped_factory(sorted(allowed_names))
         if allowed_names == set(parent.tool_names):
             return parent
         constructor_values = {
@@ -321,6 +332,167 @@ class AgentLoop:
                     scoped.register(tool)
         _copy_registry_security_components(parent, scoped)
         return scoped
+
+    def _plan_store(self) -> Any | None:
+        task_list = self.tool_registry.get("task_list") if self.tool_registry is not None else None
+        candidate = getattr(task_list, "plan_store", None)
+        if candidate is not None and all(
+            callable(getattr(candidate, name, None))
+            for name in ("create_plan", "list_plans", "get_plan", "enter_plan", "confirm_plan", "release_plan", "owned_plan")
+        ):
+            return candidate
+        return None
+
+    def plan_command(self, session_key: str, command: str) -> PlanCommand:
+        """Handle an explicit mode command and optionally return its run prompt."""
+
+        text = command.strip()
+        parts = text.split(maxsplit=2)
+        action = parts[0].lower() if parts else ""
+        store = self._plan_store()
+        if store is None:
+            return PlanCommand("Plan mode is unavailable: the task registry has no project plan store.")
+        try:
+            if action == "/plans":
+                plans = store.list_plans()
+                if not plans:
+                    return PlanCommand("No plans.")
+                lines = []
+                for plan in plans:
+                    owner = plan.get("owner_session") or "-"
+                    pending = " pending-confirmation" if plan.get("pending_confirmation") else ""
+                    lines.append(
+                        f"{plan.get('id')} [{plan.get('mode', 'released')}{pending}] "
+                        f"owner={owner}: {plan.get('goal', '')}"
+                    )
+                return PlanCommand("\n".join(lines))
+
+            if action == "/plan":
+                if len(parts) < 2:
+                    return PlanCommand("Usage: /plan new <goal> | /plan <id>")
+                if parts[1].lower() == "new":
+                    goal = parts[2].strip() if len(parts) > 2 else ""
+                    if not goal:
+                        return PlanCommand("Usage: /plan new <goal>")
+                    plan = store.create_plan(goal, session_key)
+                    self._set_plan_metadata(session_key, plan)
+                    return PlanCommand(
+                        f"Plan {plan['id']} created. Planning mode is active; review the proposal, then use /execute.",
+                        run_prompt=(
+                            "Plan this goal: " + goal +
+                            "\nInvestigate the workspace, build a dependency-aware task graph, and present the proposed plan. "
+                            "Wait for /execute; do not execute implementation work or claim acceptance."
+                        ),
+                    )
+                plan = store.enter_plan(parts[1], session_key)
+                self._set_plan_metadata(session_key, plan)
+                return PlanCommand(
+                    f"Entered plan {plan['id']} in planning mode.",
+                    run_prompt=(
+                        "Review and continue planning this goal: " + str(plan.get("goal", "")) +
+                        "\nInvestigate, update the task graph as needed, present the plan, and wait for /execute."
+                    ),
+                )
+
+            if action == "/execute":
+                plan = store.owned_plan(session_key)
+                if plan is None:
+                    return PlanCommand("No plan is active for this session. Use /plan new <goal> first.")
+                if plan.get("pending_confirmation"):
+                    plan = store.confirm_plan(str(plan["id"]), session_key)
+                    self._set_plan_metadata(session_key, plan)
+                elif plan.get("mode") != "execute":
+                    plan = store.confirm_plan(str(plan["id"]), session_key)
+                    self._set_plan_metadata(session_key, plan)
+                return PlanCommand(
+                    f"Executing plan {plan['id']}.",
+                    run_prompt=(
+                        "Execute the approved plan autonomously in dependency order. "
+                        "Record progress with the task progress tool when available. "
+                        "If adding tasks or changing the goal/dependencies is needed, stop and ask the user to use /plan. "
+                        "Check each task acceptance criteria and record checks/results in task_progress when available; "
+                        "completed is your claim, not independent runtime verification. Do not auto-schedule unrelated work."
+                    ),
+                )
+
+            if action == "/exit-plan":
+                plan = store.owned_plan(session_key)
+                if plan is None:
+                    self._clear_plan_metadata(session_key)
+                    return PlanCommand("No active plan.")
+                released = store.release_plan(str(plan["id"]), session_key)
+                self._clear_plan_metadata(session_key)
+                return PlanCommand(f"Exited plan {released['id']}; session is back in normal mode.")
+        except (KeyError, ValueError) as exc:
+            return PlanCommand(f"Error: {exc}")
+        return PlanCommand("Unknown plan command.")
+
+    def _set_plan_metadata(self, session_key: str, plan: dict[str, Any]) -> None:
+        session = self.session_manager.get_or_create(session_key)
+        session.metadata.update({
+            "agent_mode": str(plan.get("mode") or "plan"),
+            "current_plan_id": str(plan.get("id") or ""),
+            "project_id": str(plan.get("project_id") or ""),
+        })
+        self.session_manager.save(session)
+
+    def _sync_plan_metadata(self, session_key: str, session: Session) -> None:
+        """Recover mode from the durable plan owner record after restart."""
+        store = self._plan_store()
+        if store is None:
+            return
+        # Store failures are surfaced to the turn.  Treating an unreadable
+        # project document as normal mode could reopen write tools after a
+        # restart.
+        plan = store.owned_plan(session_key)
+        if plan is None:
+            # A released plan must not leave a stale execute mode in the
+            # session file.  Keep unrelated metadata intact.
+            if any(key in session.metadata for key in ("agent_mode", "current_plan_id", "project_id")):
+                self._clear_plan_metadata(session_key)
+            return
+        expected = {
+            "agent_mode": str(plan.get("mode") or "plan"),
+            "current_plan_id": str(plan.get("id") or ""),
+            "project_id": str(plan.get("project_id") or ""),
+        }
+        if any(session.metadata.get(key) != value for key, value in expected.items()):
+            session.metadata.update(expected)
+            self.session_manager.save(session)
+
+    def _clear_plan_metadata(self, session_key: str) -> None:
+        session = self.session_manager.get_or_create(session_key)
+        session.metadata.pop("agent_mode", None)
+        session.metadata.pop("current_plan_id", None)
+        session.metadata.pop("project_id", None)
+        self.session_manager.save(session)
+
+    def _mode_prompt(self, session: Session) -> str:
+        mode = session.metadata.get("agent_mode")
+        plan_id = str(session.metadata.get("current_plan_id") or "")
+        goal = ""
+        store = self._plan_store()
+        if plan_id and store is not None:
+            try:
+                goal = str(store.get_plan(plan_id).get("goal") or "")
+            except (KeyError, ValueError):
+                goal = ""
+        identity = f" Plan id: {plan_id}." if plan_id else ""
+        goal_text = f" Current goal: {goal}." if goal else ""
+        if mode == "plan":
+            return (
+                "You are in PLAN mode." + identity + goal_text + " Only investigate, clarify names with ask_user, "
+                "build or update the task graph, and present the proposal. Wait for the explicit /execute command "
+                "before implementation."
+            )
+        if mode == "execute":
+            return (
+                "You are in EXECUTE mode for the approved plan." + identity + goal_text + " Work through existing "
+                "tasks by dependency order and record progress. If adding tasks or changing the goal or dependencies "
+                "is needed, stop and request /plan. Check each task acceptance criteria and record checks/results in "
+                "task_progress when available; completed is your claim, not independent runtime verification."
+            )
+        return ""
 
     def reset_session(self, session_key: str) -> None:
         self.session_manager.reset(session_key)
@@ -500,7 +672,7 @@ class AgentLoop:
         rendered = self._observation_memory_text(session_key)
         return rendered or "Observation processing found no durable facts in the covered turns."
 
-    def _subagent_registry(self) -> ToolRegistry:
+    def _subagent_registry(self, parent_context: ToolRuntimeContext | None = None) -> ToolRegistry:
         if self.tool_registry is None:
             return ToolRegistry()
         parent = self.tool_registry
@@ -514,7 +686,11 @@ class AgentLoop:
             sub = ToolRegistry(**constructor_values)
         except TypeError:
             sub = ToolRegistry()
-        for name in self.tool_registry.tool_names:
+        names = set(self.tool_registry.tool_names)
+        if parent_context is not None and getattr(parent_context, "allowed_tools", None) is not None:
+            names &= {str(name) for name in parent_context.allowed_tools or []}
+        names -= EXECUTE_GRAPH_WRITE_TOOLS | {"task_progress"}
+        for name in names:
             if name in {"spawn", "ask_user"}:
                 continue
             tool = self.tool_registry.get(name)
@@ -531,8 +707,8 @@ class AgentLoop:
         sub_prompt = (prompt or "").strip()
         if not sub_prompt:
             return "Error: prompt is required"
-        registry = self._subagent_registry()
         parent_context = get_current_tool_context()
+        registry = self._subagent_registry(parent_context)
         model = self.config.model or self.provider.model
         messages: list[Message] = [
             {"role": "system", "content": self.config.system_prompt},
@@ -670,20 +846,42 @@ class AgentLoop:
         if chat_id is None:
             chat_id = session_key.split(":", 1)[1] if ":" in session_key else session_key
         metadata_values = dict(metadata or {})
+        session = self.session_manager.get_or_create(session_key)
+        mode = session.metadata.get("agent_mode")
+        registry_names = set(self.tool_registry.tool_names) if self.tool_registry is not None else set()
+        requested = metadata_values.get("allowed_tools")
+        if isinstance(requested, (list, tuple, set)):
+            allowed_names = {str(name) for name in requested} & registry_names
+        else:
+            allowed_names = set(registry_names)
+        if mode == "plan":
+            allowed_names &= PLAN_TOOLS
+        elif mode == "execute":
+            allowed_names -= EXECUTE_GRAPH_WRITE_TOOLS
+        else:
+            # Normal conversations can inspect the graph, while mutations are
+            # explicit plan-mode operations.
+            allowed_names -= EXECUTE_GRAPH_WRITE_TOOLS | {"task_progress"}
+        if channel == "cron" and not (
+            isinstance(metadata_values.get("allowed_tools"), list)
+            and isinstance(metadata_values.get("resource_scopes"), (dict, list, tuple, set))
+        ):
+            allowed_names &= set(_CRON_LOCAL_READ_TOOLS)
+        mode_allowed = sorted(allowed_names)
         values: dict[str, Any] = {
             "session_key": session_key,
             "channel": channel,
             "chat_id": chat_id,
             "metadata": metadata_values,
             "workspace": self.session_manager.workspace,
-            "tool_names": sorted(self.tool_registry.tool_names) if self.tool_registry is not None else [],
+            "tool_names": mode_allowed,
             "spawn": self._spawn_subagent,
             "ask": ask_callback,
             "subject": metadata_values.get("subject") or f"{channel}:{session_key}",
             "security_subject": metadata_values.get("security_subject")
             or metadata_values.get("subject")
             or f"{channel}:{session_key}",
-            "allowed_tools": metadata_values.get("allowed_tools"),
+            "allowed_tools": mode_allowed,
             "resource_scopes": metadata_values.get("resource_scopes"),
             "approval": ask_callback,
             "approval_callback": ask_callback,
@@ -699,9 +897,6 @@ class AgentLoop:
                 values["resource_scopes"] = ["workspace"]
             values["subject"] = metadata_values.get("subject") or "internal:cron"
             values["security_subject"] = metadata_values.get("security_subject") or "internal:cron"
-
-        if isinstance(values.get("allowed_tools"), list):
-            values["tool_names"] = list(values["allowed_tools"])
 
         if base_context is not None:
             base_values = {
@@ -719,17 +914,34 @@ class AgentLoop:
                 "approval",
                 "approval_callback",
                 "approval_id",
-                "allowed_tools",
                 "resource_scopes",
                 "spawn",
                 "ask",
             ):
                 if field in base_values and getattr(base_context, field, None) is not None:
                     base_values[field] = getattr(base_context, field)
+            base_allowed = getattr(base_context, "allowed_tools", None)
+            if base_allowed is not None:
+                base_set = {str(name) for name in base_allowed}
+                base_values["allowed_tools"] = [name for name in mode_allowed if name in base_set]
+            else:
+                base_values["allowed_tools"] = list(mode_allowed)
+            base_values["tool_names"] = list(base_values["allowed_tools"])
             if getattr(base_context, "channel", "") == "cron":
                 base_values["spawn"] = None
                 base_values["ask"] = None
             values = base_values
+        if mode == "plan":
+            values["spawn"] = None
+        values["metadata"] = dict(values.get("metadata") or {})
+        for key in ("agent_mode", "current_plan_id", "project_id"):
+            values["metadata"].pop(key, None)
+        if mode in {"plan", "execute"}:
+            values["metadata"].update({
+                "agent_mode": mode,
+                "current_plan_id": session.metadata.get("current_plan_id"),
+                "project_id": session.metadata.get("project_id"),
+            })
         return _make_runtime_context(values)
 
     def _persist_turn(

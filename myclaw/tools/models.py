@@ -120,25 +120,37 @@ class SpawnInput(ToolInputModel):
 class TaskCreateInput(ToolInputModel):
     title: str
     description: str = ""
-    status: str = "pending"
+    approach: str = ""
+    acceptance_criteria: str = ""
     depends_on: list[str] | None = None
 
 
 class TaskListInput(ToolInputModel):
+    plan_id: str | None = None
     status: str | None = None
+    legacy: bool = False
 
 
 class TaskGetInput(ToolInputModel):
     id: str
+    legacy: bool = False
 
 
 class TaskUpdateInput(ToolInputModel):
     id: str
     title: str | None = None
     description: str | None = None
-    status: str | None = None
+    approach: str | None = None
+    acceptance_criteria: str | None = None
     depends_on: list[str] | None = None
-    metadata: dict[str, Any] | None = None
+    cancel: bool = False
+
+
+class TaskProgressInput(ToolInputModel):
+    id: str
+    status: str | None = None
+    # Progress is an execution report or a short evidence note.
+    progress: str | None = None
 
 
 class WebFetchInput(ToolInputModel):
@@ -174,6 +186,7 @@ __all__ = [
     "TaskCreateInput",
     "TaskGetInput",
     "TaskListInput",
+    "TaskProgressInput",
     "TaskUpdateInput",
     "ToolInputModel",
     "WebFetchInput",

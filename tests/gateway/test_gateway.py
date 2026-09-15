@@ -399,6 +399,18 @@ def test_gateway_admission_rejection_uses_session_and_global_http_statuses():
     assert global_full[1]["retry-after"] == "7"
 
 
+def test_gateway_mode_switch_busy_is_an_explicit_conflict():
+    async def scenario(server):
+        return await _request(server.port, "POST", "/api/messages", json.dumps({"content": "/execute"}))
+
+    response = asyncio.run(_with_server(RejectingDispatcher("mode_switch_busy"), scenario))
+    assert response[0] == 409
+    body = json.loads(response[2])
+    assert body["code"] == "mode_switch_busy"
+    assert "/stop" in body["error"]
+    assert "retry-after" not in response[1]
+
+
 def test_gateway_rejects_invalid_request_id():
     async def scenario(server):
         return await _request(

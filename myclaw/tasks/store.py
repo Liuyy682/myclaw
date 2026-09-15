@@ -127,6 +127,8 @@ class TaskStore:
                 self._check_deps_exist(deps, tasks, ignore_id=task_id)
                 self._check_acyclic(task_id, deps, tasks)
                 updated["depends_on"] = deps
+            if metadata is not None:
+                updated["metadata"] = dict(metadata)
             if status is not None:
                 self._validate_status(status)
                 self._check_transition(updated.get("status", "pending"), status)
