@@ -221,7 +221,7 @@ def test_eval_recovery_marks_unfinished_tool_as_interrupted(tmp_path):
 
     assert any(
         message.get("tool_call_id") == "second"
-        and message["content"] == "Error: Task interrupted before this tool finished."
+        and "no operation ledger is configured" in message["content"]
         for message in capture.calls[0]
     )
 

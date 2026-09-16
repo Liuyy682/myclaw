@@ -268,7 +268,7 @@ def test_restart_recovers_owner_and_mode_without_replaying_pending_tool(tmp_path
     assert recovered.metadata["project_id"] == store.project_id
     assert store.get_plan(plan["id"])["owner_session"] == session_key
     assert any(
-        "interrupted before this tool finished" in message["content"]
+        "no operation ledger record exists" in message["content"]
         for message in recovered.messages
         if message.get("role") == "tool"
     )

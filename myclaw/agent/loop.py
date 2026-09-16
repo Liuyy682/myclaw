@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import contextlib
+import json
 import logging
 from typing import Any
 import uuid
@@ -20,11 +21,12 @@ from myclaw.agent.types import AgentConfig, AgentRunSpec, Message, ProgressCallb
 from myclaw.cron import CronStore
 from myclaw.memory import MemoryStore
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, SpanHandle, current_trace_context
-from myclaw.providers.base import LLMProvider
+from myclaw.providers.base import LLMProvider, ToolCallRequest
 from myclaw.session import Session, SessionManager, TranscriptStore
 from myclaw.skills import SkillCatalog
 from myclaw.tools import ToolRegistry
 from myclaw.tools.base import AskCallback, ToolRuntimeContext, get_current_tool_context
+from myclaw.tools.security import canonical_args_hash, operation_id
 
 
 _CRON_LOCAL_READ_TOOLS = (
@@ -49,7 +51,44 @@ class AgentLoop:
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
     _SESSION_TITLE_KEY = "title"
     _PENDING_USER_ERROR = "Error: Task interrupted before a response was generated."
-    _PENDING_TOOL_ERROR = "Error: Task interrupted before this tool finished."
+    _RECOVERY_NOT_VERIFIED = (
+        "Recovery note (not the original tool output): unable to verify whether tool '{name}' "
+        "completed before interruption."
+    )
+    _RECOVERY_NO_LEDGER = (
+        "Recovery note (not the original tool output): tool '{name}' call was interrupted; "
+        "no operation ledger is configured to verify it."
+    )
+    _RECOVERY_NO_RECORD = (
+        "Recovery note (not the original tool output): no operation ledger record exists for "
+        "tool '{name}'; this cannot establish that the tool was not executed."
+    )
+    _RECOVERY_STATUS = {
+        "succeeded": (
+            "Recovery note (not the original tool output): tool '{name}' was recorded as "
+            "succeeded before interruption; the original output is unavailable. Do not execute "
+            "this operation again."
+        ),
+        "failed": (
+            "Recovery note (not the original tool output): tool '{name}' was recorded as failed "
+            "before interruption; the original output is unavailable. It may have caused partial "
+            "side effects; check before retrying."
+        ),
+        "prepared": (
+            "Recovery note (not the original tool output): tool '{name}' operation was only "
+            "prepared before interruption; the execution result is uncertain, so check before "
+            "retrying."
+        ),
+        "running": (
+            "Recovery note (not the original tool output): tool '{name}' operation was still "
+            "running before interruption; the execution result is uncertain, so check before "
+            "retrying."
+        ),
+        "unknown": (
+            "Recovery note (not the original tool output): tool '{name}' operation outcome is "
+            "unknown; the execution result is uncertain, so check before retrying."
+        ),
+    }
 
     def __init__(
         self,
@@ -201,7 +240,7 @@ class AgentLoop:
         with self.observability.span("context.prepare", "agent") as prepare_span:
             session = self.session_manager.get_or_create(session_key)
             self._sync_plan_metadata(session_key, session)
-            if self._restore_incomplete_turn(session):
+            if self._restore_incomplete_turn(session, session_key=session_key):
                 self.session_manager.save(session)
             compacted = False
             if self._observation_compaction_safe(session):
@@ -987,8 +1026,8 @@ class AgentLoop:
     def _clear_runtime_checkpoint(self, session: Session) -> None:
         session.metadata.pop(self._RUNTIME_CHECKPOINT_KEY, None)
 
-    def _restore_incomplete_turn(self, session: Session) -> bool:
-        if self._restore_runtime_checkpoint(session):
+    def _restore_incomplete_turn(self, session: Session, *, session_key: str) -> bool:
+        if self._restore_runtime_checkpoint(session, session_key=session_key):
             return True
         return self._restore_pending_user_turn(session)
 
@@ -1002,12 +1041,12 @@ class AgentLoop:
         self._clear_pending_user_turn(session)
         return True
 
-    def _restore_runtime_checkpoint(self, session: Session) -> bool:
+    def _restore_runtime_checkpoint(self, session: Session, *, session_key: str) -> bool:
         checkpoint = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
         if not isinstance(checkpoint, dict):
             return False
 
-        restored_messages = self._checkpoint_messages(checkpoint)
+        restored_messages = self._checkpoint_messages(checkpoint, session_key=session_key)
         overlap = self._checkpoint_overlap(session.messages, restored_messages)
         session.messages.extend(restored_messages[overlap:])
         session.updated_at = datetime.now()
@@ -1015,7 +1054,9 @@ class AgentLoop:
         self._clear_runtime_checkpoint(session)
         return True
 
-    def _checkpoint_messages(self, checkpoint: dict[str, Any]) -> list[Message]:
+    def _checkpoint_messages(
+        self, checkpoint: dict[str, Any], *, session_key: str
+    ) -> list[Message]:
         restored: list[Message] = []
         raw_messages = checkpoint.get("messages") or []
         if isinstance(raw_messages, list):
@@ -1032,7 +1073,9 @@ class AgentLoop:
         raw_pending = checkpoint.get("pending_tool_calls") or []
         if isinstance(raw_pending, list):
             for tool_call in raw_pending:
-                message = self._pending_tool_message(tool_call, fulfilled)
+                message = self._pending_tool_message(
+                    tool_call, fulfilled, session_key=session_key
+                )
                 if message is not None:
                     restored.append(message)
         return restored
@@ -1055,7 +1098,13 @@ class AgentLoop:
                 restored[key] = message[key]
         return restored
 
-    def _pending_tool_message(self, tool_call: Any, fulfilled: set[str]) -> Message | None:
+    def _pending_tool_message(
+        self,
+        tool_call: Any,
+        fulfilled: set[str],
+        *,
+        session_key: str,
+    ) -> Message | None:
         if not isinstance(tool_call, dict):
             return None
         tool_call_id = tool_call.get("id")
@@ -1066,13 +1115,100 @@ class AgentLoop:
         if isinstance(function, dict) and isinstance(function.get("name"), str) and function["name"]:
             name = function["name"]
         fulfilled.add(tool_call_id)
+        content = self._recovery_tool_content(
+            tool_call_id,
+            name,
+            function,
+            session_key=session_key,
+        )
         return {
             "role": "tool",
-            "content": self._PENDING_TOOL_ERROR,
+            "content": content,
             "timestamp": datetime.now().isoformat(),
             "tool_call_id": tool_call_id,
             "name": name,
         }
+
+    def _recovery_tool_content(
+        self,
+        tool_call_id: str,
+        name: str,
+        function: Any,
+        *,
+        session_key: str,
+    ) -> str:
+        """Describe a pending result using the durable operation ledger only.
+
+        Recovery must never invoke a tool or mutate the ledger.  The registry's
+        preparation hook is reused solely to derive the same normalized
+        arguments that the execution path used before hashing the operation.
+        """
+
+        registry = self.tool_registry
+        if registry is None:
+            return self._RECOVERY_NO_LEDGER.format(name=name)
+        if not isinstance(function, dict):
+            return self._RECOVERY_NOT_VERIFIED.format(name=name)
+
+        raw_arguments = function.get("arguments", {})
+        arguments: Any = raw_arguments
+        if isinstance(raw_arguments, str):
+            try:
+                arguments = json.loads(raw_arguments)
+            except Exception as exc:
+                logger.warning(
+                    "Tool recovery argument parsing failed session=%s tool_call_id=%s tool=%s error_type=%s",
+                    session_key,
+                    tool_call_id,
+                    name,
+                    type(exc).__name__,
+                )
+                return self._RECOVERY_NOT_VERIFIED.format(name=name)
+        try:
+            request = ToolCallRequest(id=tool_call_id, name=name, arguments=arguments)
+            tool, normalized, error = registry.prepare_call(request)
+        except Exception as exc:
+            logger.warning(
+                "Tool recovery argument normalization failed session=%s tool_call_id=%s tool=%s error_type=%s",
+                session_key,
+                tool_call_id,
+                name,
+                type(exc).__name__,
+            )
+            return self._RECOVERY_NOT_VERIFIED.format(name=name)
+        if error is not None or tool is None:
+            return self._RECOVERY_NOT_VERIFIED.format(name=name)
+        store = getattr(registry, "security_store", None)
+        if store is None:
+            return self._RECOVERY_NO_LEDGER.format(name=name)
+        try:
+            args_hash = canonical_args_hash(normalized)
+            operation = operation_id(session_key, tool_call_id, name, args_hash)
+            record = store.get_operation(operation)
+        except Exception as exc:
+            logger.warning(
+                "Tool recovery ledger lookup failed session=%s tool_call_id=%s tool=%s error_type=%s",
+                session_key,
+                tool_call_id,
+                name,
+                type(exc).__name__,
+            )
+            return self._RECOVERY_NOT_VERIFIED.format(name=name)
+        if record is None:
+            return self._RECOVERY_NO_RECORD.format(name=name)
+        status = record.get("status") if isinstance(record, dict) else getattr(record, "status", None)
+        status = str(status or "").lower()
+        template = self._RECOVERY_STATUS.get(status)
+        if template is None:
+            logger.warning(
+                "Tool recovery ledger returned unknown status session=%s tool_call_id=%s tool=%s status=%s",
+                session_key,
+                tool_call_id,
+                name,
+                status or "<empty>",
+            )
+            return self._RECOVERY_NOT_VERIFIED.format(name=name)
+        return template.format(name=name)
 
     @classmethod
     def _checkpoint_overlap(cls, existing: list[Message], restored: list[Message]) -> int:

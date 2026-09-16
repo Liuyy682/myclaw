@@ -357,7 +357,7 @@ def test_fault_cancellation_recovers_on_next_user_turn(tmp_path):
     assert run["fault_injection"]["recovered_on_next_user_turn"] is True
     assert run["recovery_mode"] == "checkpoint_turn_recovery"
     assert any(
-        "interrupted before this tool finished" in str(message.get("content", ""))
+        "no operation ledger is configured" in str(message.get("content", ""))
         for message in run["final_state"]["session_messages"]
     )
 

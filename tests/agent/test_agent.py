@@ -653,7 +653,10 @@ def test_run_restores_runtime_checkpoint_with_pending_tool_result(tmp_path):
         {"role": "tool", "content": "first ok", "tool_call_id": "call_first", "name": "first"},
         {
             "role": "tool",
-            "content": "Error: Task interrupted before this tool finished.",
+            "content": (
+                "Recovery note (not the original tool output): tool 'second' call was interrupted; "
+                "no operation ledger is configured to verify it."
+            ),
             "tool_call_id": "call_second",
             "name": "second",
         },
