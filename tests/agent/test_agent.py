@@ -287,8 +287,20 @@ def test_normal_completion_publishes_once_and_clears_recovery_metadata(tmp_path)
 
     asyncio.run(loop.run("hello", session_key=SESSION_KEY))
 
-    assert manager.save_calls == 2  # pending user + one final result commit
-    assert manager.saved_metadata == [{"pending_user_turn": True}, {}]
+    assert manager.save_calls == 3  # pending user + response checkpoint + final commit
+    assert manager.saved_metadata == [
+        {"pending_user_turn": True},
+        {
+            "pending_user_turn": True,
+            "runtime_checkpoint": {
+                "phase": "model_response_received",
+                "iteration": 0,
+                "messages": [{"role": "assistant", "content": "Echo: hello"}],
+                "pending_tool_calls": [],
+            },
+        },
+        {},
+    ]
     cached = manager.get_or_create(SESSION_KEY)
     assert [message["content"] for message in cached.messages] == ["hello", "Echo: hello"]
     assert "pending_user_turn" not in cached.metadata
@@ -314,12 +326,49 @@ def test_final_session_save_failure_does_not_publish_assistant_side_effects(tmp_
     live = manager.get_or_create(SESSION_KEY)
     assert [message["content"] for message in live.messages] == ["hello"]
     assert live.metadata["pending_user_turn"] is True
+    checkpoint = live.metadata["runtime_checkpoint"]
+    assert checkpoint["phase"] == "model_response_received"
+    assert checkpoint["pending_tool_calls"] == []
+    assert [message["content"] for message in checkpoint["messages"]] == ["Echo: hello"]
 
     reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
     assert [message["content"] for message in reloaded.messages] == ["hello"]
     transcript = tmp_path / "transcripts" / f"{SessionManager.safe_key(SESSION_KEY)}.jsonl"
     records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
     assert [record["message"]["role"] for record in records] == ["user"]
+
+
+def test_next_turn_recovers_model_response_once_after_final_save_failure(tmp_path):
+    failing_manager = FailFinalSessionSaveManager(tmp_path)
+    interrupted_loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=failing_manager,
+    )
+
+    with pytest.raises(OSError, match="final session save unavailable"):
+        asyncio.run(interrupted_loop.run("hello", session_key=SESSION_KEY))
+
+    provider = CapturingProvider()
+    recovery_loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
+    asyncio.run(recovery_loop.run("next", session_key=SESSION_KEY))
+
+    assert provider.calls[0] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Echo: hello"},
+        {"role": "user", "content": "next"},
+    ]
+    recovered = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in recovered.messages] == [
+        "hello",
+        "Echo: hello",
+        "next",
+        "Echo: next",
+    ]
 
 
 def test_provider_error_returns_clear_message_and_keeps_user_turn(tmp_path):
@@ -509,6 +558,24 @@ class ToolLoopProvider:
         return LLMResponse(content="sum is 5", final=True)
 
 
+class ToolThenFailingProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
+            )
+        raise RuntimeError("provider unavailable")
+
+
 def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     manager = SessionManager(tmp_path)
     registry = ToolRegistry()
@@ -599,6 +666,40 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
     assert reloaded.metadata == {}
 
 
+def test_run_persists_tool_messages_and_error_from_follow_up_model_failure(tmp_path):
+    manager = SessionManager(tmp_path)
+    registry = ToolRegistry()
+    registry.register(
+        FunctionTool(
+            "add",
+            "Add",
+            {"type": "object"},
+            lambda a, b: a + b,
+            read_only=True,
+            effect="local_read",
+        )
+    )
+    loop = AgentLoop(
+        ToolThenFailingProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+
+    result = asyncio.run(loop.run("what is 2 + 3?", session_key=SESSION_KEY))
+
+    assert result.content == "Error: provider unavailable"
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["role"] for message in reloaded.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert reloaded.messages[-1]["content"] == "Error: provider unavailable"
+    assert reloaded.metadata == {}
+
+
 def test_tool_turn_save_failure_preserves_checkpoint_and_recovers_without_duplicate_output(tmp_path):
     manager = FailFinalSessionSaveManager(tmp_path)
     registry = ToolRegistry()
@@ -625,10 +726,11 @@ def test_tool_turn_save_failure_preserves_checkpoint_and_recovers_without_duplic
     cached = manager.get_or_create(SESSION_KEY)
     assert [message["content"] for message in cached.messages] == ["what is 2 + 3?"]
     assert cached.metadata["pending_user_turn"] is True
-    assert cached.metadata["runtime_checkpoint"]["phase"] == "tools_completed"
+    assert cached.metadata["runtime_checkpoint"]["phase"] == "model_response_received"
     assert [message["role"] for message in cached.metadata["runtime_checkpoint"]["messages"]] == [
         "assistant",
         "tool",
+        "assistant",
     ]
 
     reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
@@ -657,6 +759,7 @@ def test_tool_turn_save_failure_preserves_checkpoint_and_recovers_without_duplic
             }
         ]},
         {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+        {"role": "assistant", "content": "sum is 5"},
         {"role": "user", "content": "next"},
     ]
     recovered = SessionManager(tmp_path).get_or_create(SESSION_KEY)
@@ -664,10 +767,11 @@ def test_tool_turn_save_failure_preserves_checkpoint_and_recovers_without_duplic
         "user",
         "assistant",
         "tool",
+        "assistant",
         "user",
         "assistant",
     ]
-    assert [message["content"] for message in recovered.messages].count("sum is 5") == 0
+    assert [message["content"] for message in recovered.messages].count("sum is 5") == 1
     assert recovered.metadata == {}
 
 

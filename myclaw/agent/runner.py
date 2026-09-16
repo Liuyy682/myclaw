@@ -27,7 +27,7 @@ class AgentRunner:
                 assistant_text = f"Error: {error}"
                 return AgentRunResult(
                     content=assistant_text,
-                    messages=[self._assistant_message(assistant_text)],
+                    messages=[*generated, self._assistant_message(assistant_text)],
                     stop_reason="error",
                     error=error,
                 )
@@ -93,6 +93,13 @@ class AgentRunner:
             generated.append(assistant_message)
             working_messages.append(assistant_message)
             last_assistant_content = assistant_message["content"]
+            await self._emit_checkpoint(
+                spec,
+                phase="model_response_received",
+                iteration=iteration,
+                messages=generated,
+                pending_tool_calls=[],
+            )
 
             if llm_response.final:
                 return AgentRunResult(

@@ -61,6 +61,32 @@ def test_runner_continues_until_provider_returns_final_response():
     ]
 
 
+def test_runner_checkpoints_each_complete_model_response_before_final_check():
+    provider = MultiStepProvider()
+    checkpoints = []
+
+    async def record_checkpoint(payload):
+        checkpoints.append(payload)
+
+    result = asyncio.run(AgentRunner(provider).run(AgentRunSpec(
+        messages=[{"role": "user", "content": "solve"}],
+        model="multi",
+        max_iterations=3,
+        checkpoint_callback=record_checkpoint,
+    )))
+
+    assert result.content == "done"
+    assert [(checkpoint["phase"], checkpoint["iteration"]) for checkpoint in checkpoints] == [
+        ("model_response_received", 0),
+        ("model_response_received", 1),
+    ]
+    assert [
+        [message["content"] for message in checkpoint["messages"]]
+        for checkpoint in checkpoints
+    ] == [["thinking"], ["thinking", "done"]]
+    assert all(checkpoint["pending_tool_calls"] == [] for checkpoint in checkpoints)
+
+
 class NeverFinalProvider:
     model = "loop"
 
@@ -105,11 +131,16 @@ class CompleteOnlyProvider:
 def test_runner_stops_at_max_iterations():
     provider = NeverFinalProvider()
     runner = AgentRunner(provider)
+    checkpoints = []
+
+    async def record_checkpoint(payload):
+        checkpoints.append(payload)
 
     result = asyncio.run(runner.run(AgentRunSpec(
         messages=[{"role": "user", "content": "solve"}],
         model="loop",
         max_iterations=2,
+        checkpoint_callback=record_checkpoint,
     )))
 
     assert provider.calls == 2
@@ -119,6 +150,12 @@ def test_runner_stops_at_max_iterations():
         {"role": "assistant", "content": "step 1"},
         {"role": "assistant", "content": "step 2"},
     ]
+    assert checkpoints[-1] == {
+        "phase": "model_response_received",
+        "iteration": 1,
+        "messages": result.messages,
+        "pending_tool_calls": [],
+    }
 
 
 def test_runner_uses_streaming_provider_when_stream_callback_is_available():
@@ -140,6 +177,27 @@ def test_runner_uses_streaming_provider_when_stream_callback_is_available():
     assert deltas == ["hel", "lo"]
     assert provider.stream_calls == 1
     assert provider.complete_calls == 0
+
+
+def test_runner_checkpoints_streamed_response_only_after_stream_completes():
+    provider = StreamingProvider()
+    events = []
+
+    async def record_delta(delta):
+        events.append(f"delta:{delta}")
+
+    async def record_checkpoint(payload):
+        events.append(payload["phase"])
+
+    asyncio.run(AgentRunner(provider).run(AgentRunSpec(
+        messages=[{"role": "user", "content": "hello"}],
+        model="stream",
+        max_iterations=1,
+        stream_callback=record_delta,
+        checkpoint_callback=record_checkpoint,
+    )))
+
+    assert events == ["delta:hel", "delta:lo", "model_response_received"]
 
 
 def test_runner_falls_back_to_complete_when_provider_has_no_streaming_method():
@@ -169,6 +227,19 @@ class FailingProvider:
         raise RuntimeError("provider unavailable")
 
 
+class FailsAfterResponseProvider:
+    model = "broken"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(content="partial", final=False, stop_reason="continue")
+        raise RuntimeError("provider unavailable")
+
+
 class ToolCallingProvider:
     model = "tools"
 
@@ -185,6 +256,24 @@ class ToolCallingProvider:
                 tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
             )
         return LLMResponse(content=f"sum is {messages[-1]['content']}", final=True)
+
+
+class ToolThenFailingProvider:
+    model = "tools"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                final=False,
+                stop_reason="tool_calls",
+                tool_calls=[ToolCallRequest(id="call_add", name="add", arguments={"a": 2, "b": 3})],
+            )
+        raise RuntimeError("provider unavailable")
 
 
 def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
@@ -247,6 +336,34 @@ def test_runner_executes_tool_call_and_sends_tool_result_to_next_model_call():
             ],
         },
         {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+    ]
+
+
+def test_runner_keeps_tool_messages_when_follow_up_model_call_fails():
+    registry = ToolRegistry()
+    registry.register(FunctionTool("add", "Add", {"type": "object"}, lambda a, b: a + b, read_only=True, effect="local_read"))
+
+    result = asyncio.run(AgentRunner(ToolThenFailingProvider()).run(AgentRunSpec(
+        messages=[{"role": "user", "content": "add 2 and 3"}],
+        model="tools",
+        max_iterations=2,
+        tools=registry,
+    )))
+
+    assert result.messages == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_add",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 2, "b": 3}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+        {"role": "assistant", "content": "Error: provider unavailable"},
     ]
 
 
@@ -351,6 +468,7 @@ def test_runner_emits_tool_progress_checkpoints():
         "awaiting_tools",
         "tools_in_progress",
         "tools_completed",
+        "model_response_received",
     ]
     assert [message["role"] for message in checkpoints[0]["messages"]] == ["assistant"]
     assert [call["id"] for call in checkpoints[0]["pending_tool_calls"]] == ["call_add", "call_double"]
@@ -358,6 +476,13 @@ def test_runner_emits_tool_progress_checkpoints():
     assert [call["id"] for call in checkpoints[1]["pending_tool_calls"]] == ["call_double"]
     assert [message["role"] for message in checkpoints[2]["messages"]] == ["assistant", "tool", "tool"]
     assert checkpoints[2]["pending_tool_calls"] == []
+    assert [message["role"] for message in checkpoints[3]["messages"]] == [
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
+    assert checkpoints[3]["pending_tool_calls"] == []
 
 
 def test_runner_emits_tool_progress_callbacks_around_each_tool_call():
@@ -469,6 +594,40 @@ def test_runner_returns_error_state_when_provider_fails():
     assert result.messages == [
         {"role": "assistant", "content": "Error: provider unavailable"},
     ]
+
+
+def test_runner_keeps_generated_messages_when_a_later_model_call_fails():
+    result = asyncio.run(AgentRunner(FailsAfterResponseProvider()).run(AgentRunSpec(
+        messages=[{"role": "user", "content": "hello"}],
+        model="broken",
+        max_iterations=2,
+    )))
+
+    assert result.content == "Error: provider unavailable"
+    assert result.stop_reason == "error"
+    assert result.error == "provider unavailable"
+    assert result.messages == [
+        {"role": "assistant", "content": "partial"},
+        {"role": "assistant", "content": "Error: provider unavailable"},
+    ]
+
+
+def test_runner_does_not_swallow_cancellation():
+    class CancellingProvider:
+        model = "cancelled"
+
+        async def complete(self, messages, *, tools=None):
+            raise asyncio.CancelledError()
+
+    try:
+        asyncio.run(AgentRunner(CancellingProvider()).run(AgentRunSpec(
+            messages=[{"role": "user", "content": "hello"}],
+            model="cancelled",
+            max_iterations=1,
+        )))
+    except asyncio.CancelledError:
+        return
+    raise AssertionError("CancelledError was swallowed")
 
 
 def test_runner_returns_stable_message_for_temporary_llm_outage():
