@@ -16,6 +16,7 @@ class InboundMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     session_key_override: str | None = None
+    request_id: str | None = None
 
     @property
     def session_key(self) -> str:

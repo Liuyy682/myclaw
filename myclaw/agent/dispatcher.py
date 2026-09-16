@@ -15,6 +15,7 @@ from myclaw.agent.ask import AskCoordinator
 from myclaw.agent.loop import AgentLoop
 from myclaw.bus import InboundMessage, MessageBus, OutboundMessage
 from myclaw.observability import SpanHandle
+from myclaw.runtime import RequestStore
 from myclaw.tools.base import ToolRuntimeContext
 
 
@@ -82,7 +83,14 @@ class AgentDispatcher:
     _CONTROL_COMMANDS = {"/clear", "/status", "/stop", "/plans", "/exit-plan"}
     _AUTO_COMPACT_IDLE_TICK_SECONDS = 1.0
 
-    def __init__(self, bus: MessageBus, loop: AgentLoop, *, limits: DispatcherLimits | None = None) -> None:
+    def __init__(
+        self,
+        bus: MessageBus,
+        loop: AgentLoop,
+        *,
+        limits: DispatcherLimits | None = None,
+        request_store: RequestStore | None = None,
+    ) -> None:
         self.bus = bus
         self.loop = loop
         self.limits = limits or DispatcherLimits()
@@ -91,8 +99,16 @@ class AgentDispatcher:
         self._session_states: dict[str, _SessionDispatchState] = {}
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._active_session_tasks: dict[str, asyncio.Task[None]] = {}
+        self._user_stop_sessions: set[str] = set()
         self._execution_slots = asyncio.Semaphore(self.limits.max_concurrent_requests)
         self._pending_agent_requests = 0
+        if request_store is not None:
+            self.request_store = request_store
+        else:
+            self.request_store = getattr(loop, "request_store", None)
+            if self.request_store is None:
+                workspace = getattr(getattr(loop, "session_manager", None), "workspace", None)
+                self.request_store = RequestStore(workspace) if workspace is not None else None
 
     async def submit(self, msg: InboundMessage) -> SubmissionResult:
         """Admit a user message without allowing unbounded waiting tasks."""
@@ -108,7 +124,19 @@ class AgentDispatcher:
                     return result
                 state = msg._dispatch_state
                 assert state is not None
-                self._schedule_task(self._process_mode_message(msg, state))
+                if not self._persist_queued(msg, mode="mode"):
+                    self._release_reserved_request(msg.session_key, state)
+                    msg._dispatch_state = None
+                    await self._publish_rejection(msg, "request_persistence_failed")
+                    return SubmissionResult(False, reason="request_persistence_failed")
+                try:
+                    self._schedule_task(self._process_mode_message(msg, state))
+                except Exception as exc:
+                    self._mark_request_failed(msg, str(exc))
+                    self._release_reserved_request(msg.session_key, state)
+                    msg._dispatch_state = None
+                    await self._publish_rejection(msg, "service_overloaded")
+                    return SubmissionResult(False, reason="service_overloaded", retry_after_seconds=1)
                 return result
             self._schedule_task(self._process_control_message(msg, command))
             return SubmissionResult(True)
@@ -125,6 +153,11 @@ class AgentDispatcher:
                 },
             )
             return result
+        if not self._persist_queued(msg, mode="normal"):
+            self._release_reserved_request(msg.session_key, msg._dispatch_state)
+            msg._dispatch_state = None
+            await self._publish_rejection(msg, "request_persistence_failed")
+            return SubmissionResult(False, reason="request_persistence_failed")
         if self.bus.try_publish_inbound(msg):
             logger.info(
                 "Agent request accepted",
@@ -135,6 +168,7 @@ class AgentDispatcher:
             )
             return result
         self._release_reserved_request(msg.session_key, msg._dispatch_state)
+        self._mark_request_failed(msg, "inbound queue is full")
         msg._dispatch_state = None
         return SubmissionResult(False, reason="service_overloaded", retry_after_seconds=1)
 
@@ -172,6 +206,11 @@ class AgentDispatcher:
                     return
                 state = msg._dispatch_state
                 assert state is not None
+                if not self._persist_queued(msg, mode="mode"):
+                    self._release_reserved_request(msg.session_key, state)
+                    msg._dispatch_state = None
+                    await self._publish_rejection(msg, "request_persistence_failed")
+                    return
                 await self._process_mode_message(msg, state)
                 return
             await self._process_control_message(msg, command)
@@ -190,6 +229,11 @@ class AgentDispatcher:
                 await self._publish_rejection(msg, admission.reason or "service_overloaded")
                 return
             state = msg._dispatch_state
+            if not self._persist_queued(msg, mode="normal"):
+                self._release_reserved_request(msg.session_key, state)
+                msg._dispatch_state = None
+                await self._publish_rejection(msg, "request_persistence_failed")
+                return
         await self._process_agent_message(msg, state)
 
     async def _process_mode_message(self, msg: InboundMessage, state: _SessionDispatchState) -> None:
@@ -197,15 +241,23 @@ class AgentDispatcher:
         command = self._control_command(msg.content) or msg.content
         delegated = False
         try:
+            if not self._mark_request_running(msg):
+                await self._publish_rejection(msg, "request_persistence_failed")
+                return
             outcome = self.loop.plan_command(msg.session_key, command)
             if outcome.run_prompt is None:
+                self._mark_request_completed(msg)
                 await self._publish_control(msg, outcome.content, msg.metadata)
                 return
             await self._publish_control(msg, outcome.content, msg.metadata, terminal=False)
             delegated = True
             await self._process_agent_message(msg, state, run_content=outcome.run_prompt)
+        except asyncio.CancelledError:
+            self._mark_request_interrupted(msg, self._cancel_reason(msg.session_key))
+            raise
         except Exception as exc:
             logger.exception("Plan command failed for %s", msg.session_key)
+            self._mark_request_failed(msg, str(exc))
             await self._publish_control(msg, f"Error: {exc}", msg.metadata)
         finally:
             if not delegated:
@@ -295,7 +347,13 @@ class AgentDispatcher:
         self._schedule_task(coro)
 
     def _schedule_task(self, coro) -> None:
-        task = asyncio.create_task(coro)
+        try:
+            task = asyncio.create_task(coro)
+        except Exception:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
@@ -337,6 +395,7 @@ class AgentDispatcher:
                             self._execution_slots.release()
                         if acquired_session:
                             state.lock.release()
+                        self._mark_request_failed(msg, "Request timed out while waiting in the queue.")
                         trace.set_error("Request timed out while waiting in the queue.", error_type="QueueTimeout")
                         await self._publish_rejection(msg, "queue_timeout")
                         return
@@ -361,17 +420,25 @@ class AgentDispatcher:
                             }
                             if msg.channel == "gateway" or (msg.channel == "cli" and msg.metadata.get("stream") is True):
                                 run_kwargs["stream_callback"] = lambda delta: self._publish_message_delta(msg, delta, metadata)
+                            if not self._mark_request_running(msg):
+                                await self._publish_rejection(msg, "request_persistence_failed")
+                                return
                             result = await self.loop.run(run_content or msg.content, **run_kwargs)
                             content = result.content
                             if getattr(result, "error", None):
                                 trace.set_error(result.error, error_type="AgentRunError")
+                                self._mark_request_failed(msg, str(result.error))
+                            else:
+                                self._mark_request_completed(msg)
                             trace.set_attribute("stop_reason", getattr(result, "stop_reason", "completed"))
                         except asyncio.CancelledError:
+                            self._mark_request_interrupted(msg, self._cancel_reason(msg.session_key))
                             trace.set_status("cancelled")
                             raise
                         except Exception as exc:
                             trace.set_error(exc)
                             logger.exception("Agent request failed for %s", msg.session_key)
+                            self._mark_request_failed(msg, str(exc))
                             content = f"Error: {exc}"
                         finally:
                             if self._active_session_tasks.get(msg.session_key) is current_task:
@@ -391,6 +458,9 @@ class AgentDispatcher:
                             self._execution_slots.release()
                         if acquired_session:
                             state.lock.release()
+        except asyncio.CancelledError:
+            self._mark_request_interrupted(msg, self._cancel_reason(msg.session_key))
+            raise
         finally:
             self._release_reserved_request(msg.session_key, state)
 
@@ -458,12 +528,34 @@ class AgentDispatcher:
         if state is not None:
             queued = max(0, state.ref_count - (1 if running else 0))
         if running and queued:
-            return f"Status: running with {queued} queued."
-        if running:
-            return "Status: running."
-        if queued:
-            return f"Status: {queued} queued."
-        return "Status: idle."
+            base = f"Status: running with {queued} queued."
+        elif running:
+            base = "Status: running."
+        elif queued:
+            base = f"Status: {queued} queued."
+        else:
+            base = "Status: idle."
+        store = self.request_store
+        if store is None:
+            return base
+        try:
+            interrupted = store.list_recent_interrupted(session_key, limit=5)
+        except Exception:
+            logger.exception("Failed to read interrupted request history for %s", session_key)
+            return base
+        if not interrupted:
+            return base
+        lines = [base, "Interrupted requests (latest 5):"]
+        for record in interrupted:
+            summary = " ".join(record.content.split())
+            if len(summary) > 100:
+                summary = summary[:97].rstrip() + "..."
+            reason = record.error or "unknown reason"
+            lines.append(
+                f"- id={record.id} at={record.updated_at} reason={reason} input={summary!r}"
+            )
+        lines.append("重新提交会创建新任务")
+        return "\n".join(lines)
 
     async def _stop_session(self, session_key: str) -> str:
         task = self._active_session_tasks.get(session_key)
@@ -471,9 +563,18 @@ class AgentDispatcher:
             self._active_session_tasks.pop(session_key, None)
             return "No active turn to stop."
 
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        self._user_stop_sessions.add(session_key)
+        try:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            self._user_stop_sessions.discard(session_key)
         return "Stopped current turn."
+
+    def _cancel_reason(self, session_key: str) -> str:
+        if session_key in self._user_stop_sessions:
+            return "Stopped by user."
+        return "Runtime cancelled."
 
     def _clear_session(self, session_key: str) -> str:
         task = self._active_session_tasks.get(session_key)
@@ -572,6 +673,84 @@ class AgentDispatcher:
         provider = getattr(self.loop, "provider", None)
         return configured or getattr(provider, "model", "")
 
+    def _request_id(self, msg: InboundMessage) -> str:
+        request_id = msg.metadata.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            request_id = getattr(msg, "request_id", None)
+        if not isinstance(request_id, str) or not request_id:
+            request_id = uuid.uuid4().hex
+        # Keep persistence, observability and outbound events on the same ID.
+        msg.request_id = request_id
+        msg.metadata["request_id"] = request_id
+        return request_id
+
+    def _persist_queued(self, msg: InboundMessage, *, mode: str) -> bool:
+        store = self.request_store
+        if store is None:
+            return True
+        request_id = self._request_id(msg)
+        try:
+            record = store.create_queued(
+                request_id,
+                session_key=msg.session_key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=msg.content,
+                mode=mode,
+                metadata=dict(msg.metadata),
+            )
+        except Exception:
+            logger.exception("Failed to persist queued request %s", request_id)
+            # If an adapter inserted the row and failed afterwards, preserve
+            # the evidence as failed.  A normal INSERT failure simply has no
+            # row and this best-effort update is harmless.
+            self._mark_request_failed(msg, "request persistence failed")
+            return False
+        msg._request_persisted = True
+        msg._request_internal_id = record.id
+        return True
+
+    def _mark_request_running(self, msg: InboundMessage) -> bool:
+        store = self.request_store
+        if store is None or not getattr(msg, "_request_persisted", False):
+            return True
+        internal_id = getattr(msg, "_request_internal_id", None)
+        if not isinstance(internal_id, int):
+            return True
+        try:
+            store.mark_running(internal_id)
+            return True
+        except Exception:
+            logger.exception("Failed to persist running request %s", internal_id)
+            self._mark_request_failed(msg, "request persistence failed")
+            return False
+
+    def _mark_request_completed(self, msg: InboundMessage) -> None:
+        self._transition_request(msg, "completed")
+
+    def _mark_request_failed(self, msg: InboundMessage, error: str | None = None) -> None:
+        self._transition_request(msg, "failed", error)
+
+    def _mark_request_interrupted(self, msg: InboundMessage, error: str | None = None) -> None:
+        self._transition_request(msg, "interrupted", error)
+
+    def _transition_request(
+        self, msg: InboundMessage, status: str, error: str | None = None
+    ) -> None:
+        store = self.request_store
+        if store is None or not getattr(msg, "_request_persisted", False):
+            return
+        internal_id = getattr(msg, "_request_internal_id", None)
+        if not isinstance(internal_id, int):
+            return
+        try:
+            if status in {"failed", "interrupted"}:
+                getattr(store, f"mark_{status}")(internal_id, error)
+            else:
+                getattr(store, f"mark_{status}")(internal_id)
+        except Exception:
+            logger.exception("Failed to persist %s request %s", status, internal_id)
+
     def _release_reserved_request(self, session_key: str, state: _SessionDispatchState | None) -> None:
         if state is None:
             return
@@ -590,6 +769,7 @@ class AgentDispatcher:
             "session_queue_full": "Error: This session already has too many queued requests.",
             "queue_timeout": "Error: Request timed out while waiting in the queue.",
             "mode_switch_busy": "Cannot switch plan mode while this session has a running or queued turn; stop it or wait.",
+            "request_persistence_failed": "Error: Request could not be durably accepted. Please retry later.",
         }[reason]
         logger.warning(
             "dispatcher_rejected reason=%s pending=%s session_key=%s",

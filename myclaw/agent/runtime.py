@@ -38,6 +38,21 @@ class DispatcherRuntime:
         observability = getattr(loop, "observability", None)
         if observability is not None:
             observability.start()
+        request_store = getattr(self.dispatcher, "request_store", None)
+        recover_requests = getattr(request_store, "mark_incomplete_interrupted", None)
+        if callable(recover_requests):
+            try:
+                recovered_requests = recover_requests()
+                if recovered_requests:
+                    logger.warning(
+                        "Marked %d incomplete request(s) interrupted on startup",
+                        recovered_requests,
+                    )
+            except Exception:
+                # A request store failure is enforced at admission; startup
+                # recovery is best-effort so a pre-existing runtime can still
+                # serve health and report the failure on the next request.
+                logger.exception("Failed to recover incomplete requests on startup")
         registry = getattr(loop, "tool_registry", None)
         security_store = getattr(registry, "security_store", None)
         recover = getattr(security_store, "recover_incomplete_operations", None)

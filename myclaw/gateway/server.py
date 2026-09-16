@@ -275,6 +275,18 @@ class HttpGatewayServer:
                 "code": "mode_switch_busy",
             })
             return
+        if reason == "request_persistence_failed":
+            await _send_json(
+                writer,
+                503,
+                {
+                    "error": "request persistence failed",
+                    "code": "request_persistence_failed",
+                    "retry_after_seconds": retry_after_seconds or 1,
+                },
+                headers={"Retry-After": str(retry_after_seconds or 1)},
+            )
+            return
         is_session_full = reason == "session_queue_full"
         retry_after = retry_after_seconds or (5 if is_session_full else 1)
         await _send_json(

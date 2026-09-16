@@ -399,6 +399,21 @@ def test_gateway_admission_rejection_uses_session_and_global_http_statuses():
     assert global_full[1]["retry-after"] == "7"
 
 
+def test_gateway_request_persistence_failure_is_explicit_503():
+    async def scenario(server):
+        return await _request(
+            server.port,
+            "POST",
+            "/api/messages",
+            json.dumps({"content": "hello", "request_id": "persist-1"}),
+        )
+
+    response = asyncio.run(_with_server(RejectingDispatcher("request_persistence_failed"), scenario))
+    assert response[0] == 503
+    assert json.loads(response[2])["code"] == "request_persistence_failed"
+    assert response[1]["retry-after"] == "7"
+
+
 def test_gateway_mode_switch_busy_is_an_explicit_conflict():
     async def scenario(server):
         return await _request(server.port, "POST", "/api/messages", json.dumps({"content": "/execute"}))

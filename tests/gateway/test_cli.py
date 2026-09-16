@@ -329,7 +329,11 @@ def test_interactive_cli_streams_message_deltas_inline(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert output == "Assistant: hello\n"
-    assert dispatcher.received == [("direct", "hello", {"stream": True})]
+    assert len(dispatcher.received) == 1
+    chat_id, content, metadata = dispatcher.received[0]
+    assert (chat_id, content) == ("direct", "hello")
+    assert metadata["stream"] is True
+    assert len(metadata["request_id"]) == 32
 
 
 def test_interactive_cli_keeps_one_dispatcher_running_for_multiple_inputs(monkeypatch):

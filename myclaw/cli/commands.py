@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,8 @@ def _dispatcher_limits() -> DispatcherLimits:
 
 
 def _submission_error(reason: str | None) -> str:
+    if reason == "request_persistence_failed":
+        return "Error: Request could not be saved; please retry later."
     if reason == "session_queue_full":
         return "Error: This session already has too many queued requests."
     return "Error: Service is busy. Please retry later."
@@ -246,6 +249,7 @@ async def dispatch_text(
         sender_id="user",
         chat_id=session_name,
         content=text,
+        metadata={"request_id": uuid.uuid4().hex},
     )
     admission = await _submit_message(runtime.dispatcher, message)
     if admission is not None and not admission.accepted:
@@ -309,7 +313,7 @@ async def run_interactive(
                     sender_id="user",
                     chat_id=session_name,
                     content=text,
-                    metadata={"stream": True},
+                    metadata={"stream": True, "request_id": uuid.uuid4().hex},
                 ))
                 if admission is not None and not admission.accepted:
                     print(_submission_error(admission.reason))
