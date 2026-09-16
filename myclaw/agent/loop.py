@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import contextlib
+import copy
 import json
 import logging
 from typing import Any
@@ -319,18 +320,39 @@ class AgentLoop:
             )
         )
         with self.observability.span("session.persist_output", "storage") as persist_span:
-            persisted_messages = self._persist_turn(session, result.messages, turn_id=turn_id)
+            # Keep the live session as the recovery record until the complete
+            # assistant/tool result has been durably committed.  In
+            # particular, a failed save must not make an in-memory session
+            # claim that its pending turn completed.
+            candidate = copy.deepcopy(session)
+            persisted_messages = self._persist_turn(candidate, result.messages, turn_id=turn_id)
+            self._clear_pending_user_turn(candidate)
+            self._clear_runtime_checkpoint(candidate)
+            self.session_manager.save(candidate)
+
+            # These are side-channel records of a successfully committed
+            # session turn.  Keep them after the primary save so a failed
+            # session write cannot produce an apparently completed turn.
             self.transcript.append_many(session_key, persisted_messages)
-            self._clear_pending_user_turn(session)
-            self._clear_runtime_checkpoint(session)
-            await self._ensure_session_title(session)
-            self.session_manager.save(session)
             self._enqueue_observation_turn(
                 session_key,
                 turn_id,
                 [user_message, *persisted_messages],
                 metadata,
             )
+
+            # Title enrichment is deliberately best-effort and runs against
+            # the committed session state.  A second save is needed only if
+            # title generation changed that state; cancellation still
+            # propagates, while the primary result remains committed.
+            titled = copy.deepcopy(candidate)
+            previous_title = titled.metadata.get(self._SESSION_TITLE_KEY)
+            try:
+                await self._ensure_session_title(titled)
+                if titled.metadata.get(self._SESSION_TITLE_KEY) != previous_title:
+                    self.session_manager.save(titled)
+            except Exception:
+                logger.exception("Failed to generate or save session title for %s", session_key)
             persist_span.set_attribute("generated_messages", len(result.messages))
         run_messages = messages + [dict(message) for message in result.messages]
         return RunResult(
@@ -796,6 +818,7 @@ class AgentLoop:
             try:
                 title = self._clean_session_title(await self.provider.complete(self._title_messages(session)))
             except Exception:
+                logger.exception("Failed to generate session title for %s", session.key)
                 title = ""
         session.metadata[self._SESSION_TITLE_KEY] = title or self._fallback_session_title(session)
 

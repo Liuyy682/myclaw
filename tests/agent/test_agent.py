@@ -258,6 +258,70 @@ class FailingProvider:
         raise RuntimeError("provider unavailable")
 
 
+class RecordingSessionManager(SessionManager):
+    def __init__(self, workspace):
+        super().__init__(workspace)
+        self.save_calls = 0
+        self.saved_metadata = []
+
+    def save(self, session):
+        self.save_calls += 1
+        self.saved_metadata.append(dict(session.metadata))
+        return super().save(session)
+
+
+class FailFinalSessionSaveManager(SessionManager):
+    def save(self, session):
+        if len(session.messages) > 1 and not session.metadata.get("pending_user_turn"):
+            raise OSError("final session save unavailable")
+        return super().save(session)
+
+
+def test_normal_completion_publishes_once_and_clears_recovery_metadata(tmp_path):
+    manager = RecordingSessionManager(tmp_path)
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+    )
+
+    asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    assert manager.save_calls == 2  # pending user + one final result commit
+    assert manager.saved_metadata == [{"pending_user_turn": True}, {}]
+    cached = manager.get_or_create(SESSION_KEY)
+    assert [message["content"] for message in cached.messages] == ["hello", "Echo: hello"]
+    assert "pending_user_turn" not in cached.metadata
+    assert "runtime_checkpoint" not in cached.metadata
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["hello", "Echo: hello"]
+    assert "pending_user_turn" not in reloaded.metadata
+    assert "runtime_checkpoint" not in reloaded.metadata
+
+
+def test_final_session_save_failure_does_not_publish_assistant_side_effects(tmp_path):
+    manager = FailFinalSessionSaveManager(tmp_path)
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+    )
+
+    with pytest.raises(OSError, match="final session save unavailable"):
+        asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    live = manager.get_or_create(SESSION_KEY)
+    assert [message["content"] for message in live.messages] == ["hello"]
+    assert live.metadata["pending_user_turn"] is True
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["hello"]
+    transcript = tmp_path / "transcripts" / f"{SessionManager.safe_key(SESSION_KEY)}.jsonl"
+    records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
+    assert [record["message"]["role"] for record in records] == ["user"]
+
+
 def test_provider_error_returns_clear_message_and_keeps_user_turn(tmp_path):
     manager = SessionManager(tmp_path)
     loop = AgentLoop(FailingProvider(), session_manager=manager)
@@ -276,6 +340,109 @@ def test_provider_error_returns_clear_message_and_keeps_user_turn(tmp_path):
         "please answer",
         "Error: provider unavailable",
     ]
+
+
+class CancellingTitleProvider:
+    model = "title"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return "assistant reply"
+        raise asyncio.CancelledError()
+
+
+def test_title_cancellation_propagates_after_final_result_is_committed(tmp_path):
+    manager = SessionManager(tmp_path)
+    loop = AgentLoop(
+        CancellingTitleProvider(),
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=manager,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["hello", "assistant reply"]
+    assert reloaded.metadata == {}
+    transcript = tmp_path / "transcripts" / f"{SessionManager.safe_key(SESSION_KEY)}.jsonl"
+    records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
+    assert [record["message"]["role"] for record in records] == ["user", "assistant"]
+
+
+class FailTitleSessionSaveManager(SessionManager):
+    def save(self, session):
+        if session.metadata.get("title"):
+            raise OSError("title save unavailable")
+        return super().save(session)
+
+
+def test_title_second_save_failure_is_logged_after_main_commit(tmp_path, caplog):
+    manager = FailTitleSessionSaveManager(tmp_path)
+    loop = AgentLoop(
+        TitleProvider(),
+        AgentConfig(system_prompt="", auto_title=True),
+        session_manager=manager,
+    )
+
+    with caplog.at_level("ERROR", logger="myclaw.agent.loop"):
+        result = asyncio.run(loop.run("plan the launch", session_key=SESSION_KEY))
+
+    assert result.content == "assistant reply"
+    assert "Failed to generate or save session title" in caplog.text
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == [
+        "plan the launch",
+        "assistant reply",
+    ]
+    assert reloaded.metadata == {}
+
+
+def test_transcript_append_failure_does_not_change_committed_session(tmp_path, caplog):
+    # TranscriptStore handles this real filesystem failure internally.  The
+    # primary session file remains the source of truth for the turn.
+    (tmp_path / "transcripts").write_text("not a directory", encoding="utf-8")
+    manager = SessionManager(tmp_path)
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+    )
+
+    with caplog.at_level("WARNING", logger="myclaw.session.transcript"):
+        asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    assert "Failed to append transcript" in caplog.text
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["hello", "Echo: hello"]
+    assert reloaded.metadata == {}
+
+
+def test_observation_enqueue_failure_does_not_change_committed_session(tmp_path, caplog):
+    manager = SessionManager(tmp_path)
+    loop = AgentLoop(
+        FakeProvider(prefix="Echo"),
+        AgentConfig(system_prompt="", observation_memory_enabled=True),
+        session_manager=manager,
+    )
+
+    def fail_enqueue(*args, **kwargs):
+        raise OSError("observation store unavailable")
+
+    assert loop.observation_store is not None
+    loop.observation_store.enqueue_turn = fail_enqueue
+
+    with caplog.at_level("ERROR", logger="myclaw.agent.loop"):
+        asyncio.run(loop.run("hello", session_key=SESSION_KEY))
+
+    assert "Failed to enqueue observation turn" in caplog.text
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["hello", "Echo: hello"]
+    assert reloaded.metadata == {}
 
 
 class CancellingRunner:
@@ -430,6 +597,78 @@ def test_run_executes_tool_loop_and_persists_complete_tool_turn(tmp_path):
         },
     ]
     assert reloaded.metadata == {}
+
+
+def test_tool_turn_save_failure_preserves_checkpoint_and_recovers_without_duplicate_output(tmp_path):
+    manager = FailFinalSessionSaveManager(tmp_path)
+    registry = ToolRegistry()
+    registry.register(
+        FunctionTool(
+            "add",
+            "Add",
+            {"type": "object"},
+            lambda a, b: a + b,
+            read_only=True,
+            effect="local_read",
+        )
+    )
+    loop = AgentLoop(
+        ToolLoopProvider(),
+        AgentConfig(system_prompt=""),
+        session_manager=manager,
+        tool_registry=registry,
+    )
+
+    with pytest.raises(OSError, match="final session save unavailable"):
+        asyncio.run(loop.run("what is 2 + 3?", session_key=SESSION_KEY))
+
+    cached = manager.get_or_create(SESSION_KEY)
+    assert [message["content"] for message in cached.messages] == ["what is 2 + 3?"]
+    assert cached.metadata["pending_user_turn"] is True
+    assert cached.metadata["runtime_checkpoint"]["phase"] == "tools_completed"
+    assert [message["role"] for message in cached.metadata["runtime_checkpoint"]["messages"]] == [
+        "assistant",
+        "tool",
+    ]
+
+    reloaded = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["content"] for message in reloaded.messages] == ["what is 2 + 3?"]
+    assert reloaded.metadata["pending_user_turn"] is True
+    assert "runtime_checkpoint" in reloaded.metadata
+    transcript = tmp_path / "transcripts" / f"{SessionManager.safe_key(SESSION_KEY)}.jsonl"
+    records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
+    assert [record["message"]["role"] for record in records] == ["user"]
+
+    provider = CapturingProvider()
+    recovery_loop = AgentLoop(
+        provider,
+        AgentConfig(system_prompt=""),
+        session_manager=SessionManager(tmp_path),
+    )
+    asyncio.run(recovery_loop.run("next", session_key=SESSION_KEY))
+
+    assert provider.calls[0] == [
+        {"role": "user", "content": "what is 2 + 3?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {
+                "id": "call_add",
+                "type": "function",
+                "function": {"name": "add", "arguments": '{"a": 2, "b": 3}'},
+            }
+        ]},
+        {"role": "tool", "tool_call_id": "call_add", "name": "add", "content": "5"},
+        {"role": "user", "content": "next"},
+    ]
+    recovered = SessionManager(tmp_path).get_or_create(SESSION_KEY)
+    assert [message["role"] for message in recovered.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    assert [message["content"] for message in recovered.messages].count("sum is 5") == 0
+    assert recovered.metadata == {}
 
 
 def test_run_writes_full_transcript_including_tool_calls(tmp_path):
