@@ -36,7 +36,18 @@ logger = logging.getLogger(__name__)
 class _SseClient:
     chat_id: str
     writer: asyncio.StreamWriter
-    queue: asyncio.Queue[dict[str, Any] | None] = field(default_factory=asyncio.Queue)
+    queue: asyncio.Queue["_QueuedEvent | None"] = field(default_factory=asyncio.Queue)
+
+
+@dataclass(frozen=True, slots=True)
+class _QueuedEvent:
+    event: dict[str, Any]
+    internal_id: int | None = None
+
+
+@dataclass(slots=True)
+class _DeliveryAttempts:
+    remaining: int
 
 
 @dataclass(slots=True)
@@ -70,6 +81,7 @@ class HttpGatewayServer:
         self._fanout_task: asyncio.Task[None] | None = None
         self._clients: list[_SseClient] = []
         self._accepted_requests: OrderedDict[str, _AcceptedRequest] = OrderedDict()
+        self._delivery_attempts: dict[int, _DeliveryAttempts] = {}
 
     @property
     def url(self) -> str:
@@ -340,6 +352,25 @@ class HttpGatewayServer:
             await _send_json(writer, 404, {"error": "session not found"})
             return
 
+        deliveries: list[dict[str, Any]] | None = []
+        request_store = self._delivery_store()
+        if request_store is not None:
+            try:
+                records = request_store.list_recent_deliveries(session.key, limit=20)
+                deliveries = [
+                    {
+                        "request_id": record.request_id,
+                        "status": record.status,
+                        "delivery_status": record.delivery_status,
+                        "delivery_error": record.delivery_error,
+                        "delivery_updated_at": record.delivery_updated_at,
+                    }
+                    for record in records
+                ]
+            except Exception:
+                logger.exception("Failed to query deliveries for session %s", session.key)
+                deliveries = None
+
         await _send_json(
             writer,
             200,
@@ -347,6 +378,7 @@ class HttpGatewayServer:
                 "key": session.key,
                 "title": _session_title(session),
                 "messages": _display_messages(session),
+                "deliveries": deliveries,
             },
         )
 
@@ -484,26 +516,32 @@ class HttpGatewayServer:
         chat_id = _first_query_value(request.query, "chat_id") or DEFAULT_GATEWAY_CHAT_ID
         client = _SseClient(chat_id=chat_id, writer=writer)
         self._clients.append(client)
-        writer.write(
-            (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/event-stream; charset=utf-8\r\n"
-                "Cache-Control: no-cache\r\n"
-                "Connection: keep-alive\r\n"
-                "\r\n"
-            ).encode("utf-8")
-        )
-        await writer.drain()
+        current: _QueuedEvent | None = None
         try:
+            writer.write(
+                (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream; charset=utf-8\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n"
+                ).encode("utf-8")
+            )
+            await writer.drain()
             while True:
-                event = await client.queue.get()
-                if event is None:
+                current = await client.queue.get()
+                if current is None:
                     return
-                writer.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
+                writer.write(f"data: {json.dumps(current.event, ensure_ascii=False)}\n\n".encode("utf-8"))
                 await writer.drain()
+                self._delivery_succeeded(current.internal_id)
+                current = None
         except (asyncio.CancelledError, ConnectionError, OSError):
             return
         finally:
+            if current is not None:
+                self._delivery_failed_attempt(current.internal_id)
+            self._settle_client_queue(client)
             with contextlib.suppress(ValueError):
                 self._clients.remove(client)
             writer.close()
@@ -514,9 +552,69 @@ class HttpGatewayServer:
         while True:
             outbound = await self.dispatcher.bus.consume_outbound()
             event = _outbound_event(outbound)
-            for client in list(self._clients):
-                if client.chat_id == outbound.chat_id:
-                    await client.queue.put(event)
+            matched = tuple(client for client in self._clients if client.chat_id == outbound.chat_id)
+            internal_id = getattr(outbound, "_request_internal_id", None)
+            if not isinstance(internal_id, int):
+                internal_id = None
+            if internal_id is not None and not matched:
+                self._mark_delivery_failed(internal_id, "no_subscriber")
+                continue
+            if internal_id is not None:
+                self._delivery_attempts[internal_id] = _DeliveryAttempts(remaining=len(matched))
+            queued = _QueuedEvent(event=event, internal_id=internal_id)
+            for client in matched:
+                await client.queue.put(queued)
+
+    def _delivery_store(self):
+        store = getattr(self.dispatcher, "request_store", None)
+        if store is not None:
+            return store
+        loop = getattr(self.dispatcher, "loop", None)
+        return getattr(loop, "request_store", None)
+
+    def _mark_delivery_sent(self, internal_id: int) -> None:
+        try:
+            store = self._delivery_store()
+            if store is not None:
+                store.mark_delivery_sent(internal_id)
+        except Exception:
+            logger.exception("Failed to mark request %s delivery sent", internal_id)
+
+    def _mark_delivery_failed(self, internal_id: int, error: str) -> None:
+        try:
+            store = self._delivery_store()
+            if store is not None:
+                store.mark_delivery_failed(internal_id, error)
+        except Exception:
+            logger.exception("Failed to mark request %s delivery failed", internal_id)
+
+    def _delivery_succeeded(self, internal_id: int | None) -> None:
+        if internal_id is None:
+            return
+        if internal_id not in self._delivery_attempts:
+            return
+        self._delivery_attempts.pop(internal_id, None)
+        self._mark_delivery_sent(internal_id)
+
+    def _delivery_failed_attempt(self, internal_id: int | None) -> None:
+        if internal_id is None:
+            return
+        attempts = self._delivery_attempts.get(internal_id)
+        if attempts is None:
+            return
+        attempts.remaining -= 1
+        if attempts.remaining <= 0:
+            self._delivery_attempts.pop(internal_id, None)
+            self._mark_delivery_failed(internal_id, "connection_error")
+
+    def _settle_client_queue(self, client: _SseClient) -> None:
+        while True:
+            try:
+                queued = client.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if queued is not None:
+                self._delivery_failed_attempt(queued.internal_id)
 
 
 async def run_gateway(

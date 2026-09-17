@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import select
@@ -11,10 +12,12 @@ from types import SimpleNamespace
 from myclaw.agent import AgentConfig, AgentDispatcher, AgentLoop, SubmissionResult
 from myclaw.bus import MessageBus, OutboundMessage
 from myclaw.gateway import static as gateway_static
+from myclaw.gateway import server as gateway_server
 from myclaw.gateway.server import HttpGatewayServer
 from myclaw.providers import FakeProvider
 from myclaw.memory import MemoryStore
 from myclaw.observability import ObservabilityConfig, ObservabilityRuntime, ObservedProvider
+from myclaw.runtime import RequestStore
 from myclaw.session import Session, SessionManager
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -305,6 +308,143 @@ def test_gateway_post_message_publishes_inbound_and_streams_terminal_sse_event()
     }
 
 
+def test_gateway_marks_tracked_response_failed_without_matching_subscriber():
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def mark_delivery_failed(self, internal_id, error):
+            self.calls.append((internal_id, error))
+
+    async def scenario():
+        recorder = Recorder()
+        dispatcher = SimpleNamespace(bus=MessageBus(), request_store=recorder)
+        server = HttpGatewayServer(dispatcher)
+        task = asyncio.create_task(server._fanout_outbound())
+        outbound = OutboundMessage(channel="gateway", chat_id="missing", content="answer")
+        outbound._request_internal_id = 17
+        await dispatcher.bus.publish_outbound(outbound)
+        await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return recorder.calls
+
+    calls = asyncio.run(scenario())
+    assert calls == [(17, "no_subscriber")]
+
+
+def test_gateway_connection_exit_settles_current_and_queued_tracked_responses(monkeypatch):
+    class FailingWriter:
+        def __init__(self):
+            self.drains = 0
+
+        def write(self, _data):
+            return None
+
+        async def drain(self):
+            self.drains += 1
+            if self.drains > 1:
+                raise ConnectionError("closed")
+
+        def close(self):
+            return None
+
+        async def wait_closed(self):
+            return None
+
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def mark_delivery_failed(self, internal_id, error):
+            self.calls.append((internal_id, error))
+
+    async def scenario():
+        recorder = Recorder()
+        dispatcher = SimpleNamespace(bus=MessageBus(), request_store=recorder)
+        server = HttpGatewayServer(dispatcher)
+        writer = FailingWriter()
+        client = gateway_server._SseClient("direct", writer)
+        client.queue.put_nowait(gateway_server._QueuedEvent({"content": "one"}, 1))
+        client.queue.put_nowait(gateway_server._QueuedEvent({"content": "two"}, 2))
+        server._delivery_attempts[1] = gateway_server._DeliveryAttempts(remaining=1)
+        server._delivery_attempts[2] = gateway_server._DeliveryAttempts(remaining=1)
+        monkeypatch.setattr(gateway_server, "_SseClient", lambda **_kwargs: client)
+        request = SimpleNamespace(query={"chat_id": ["direct"]})
+        await server._handle_sse(writer, request)
+        return recorder.calls, client.queue.qsize(), server._delivery_attempts
+
+    calls, queued, attempts = asyncio.run(scenario())
+    assert calls == [(1, "connection_error"), (2, "connection_error")]
+    assert queued == 0
+    assert attempts == {}
+
+
+def test_gateway_marks_delivery_sent_after_drain_and_success_wins(monkeypatch):
+    class Writer:
+        def write(self, _data):
+            return None
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            return None
+
+        async def wait_closed(self):
+            return None
+
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def mark_delivery_sent(self, internal_id):
+            self.calls.append(("sent", internal_id))
+
+        def mark_delivery_failed(self, internal_id, error):
+            self.calls.append(("failed", internal_id, error))
+
+    async def scenario():
+        recorder = Recorder()
+        dispatcher = SimpleNamespace(bus=MessageBus(), request_store=recorder)
+        server = HttpGatewayServer(dispatcher)
+        writer = Writer()
+        client = gateway_server._SseClient("direct", writer)
+        client.queue.put_nowait(gateway_server._QueuedEvent({"content": "answer"}, 7))
+        client.queue.put_nowait(None)
+        server._delivery_attempts[7] = gateway_server._DeliveryAttempts(remaining=2)
+        monkeypatch.setattr(gateway_server, "_SseClient", lambda **_kwargs: client)
+        await server._handle_sse(writer, SimpleNamespace(query={"chat_id": ["direct"]}))
+        server._delivery_failed_attempt(7)
+        return recorder.calls, server._delivery_attempts
+
+    calls, attempts = asyncio.run(scenario())
+    assert calls == [("sent", 7)]
+    assert attempts == {}
+
+
+def test_gateway_marks_failed_only_after_all_target_connections_fail():
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def mark_delivery_failed(self, internal_id, error):
+            self.calls.append((internal_id, error))
+
+    recorder = Recorder()
+    server = HttpGatewayServer(SimpleNamespace(bus=MessageBus(), request_store=recorder))
+    server._delivery_attempts[9] = gateway_server._DeliveryAttempts(remaining=2)
+
+    server._delivery_failed_attempt(9)
+    assert recorder.calls == []
+    assert server._delivery_attempts[9].remaining == 1
+
+    server._delivery_failed_attempt(9)
+    assert recorder.calls == [(9, "connection_error")]
+    assert 9 not in server._delivery_attempts
+
+
 def test_gateway_post_message_passes_session_key_override():
     dispatcher = RecordingDispatcher()
 
@@ -515,9 +655,71 @@ def test_gateway_reads_saved_session_display_messages(tmp_path):
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi **there**"},
         ],
+        "deliveries": [],
     }
     assert missing[0] == 404
     assert json.loads(missing[2]) == {"error": "session not found"}
+
+
+def test_gateway_session_deliveries_are_scoped_recent_and_newest_first(tmp_path):
+    manager = SessionManager(tmp_path)
+    _save_session(manager, "gateway:direct", "Gateway Direct", [("user", "hello")])
+    store = RequestStore(tmp_path)
+    expected = []
+    for index in range(22):
+        record = store.create_queued(
+            f"req-{index}",
+            session_key="gateway:direct",
+            channel="gateway",
+            chat_id="direct",
+            content="hello",
+        )
+        store.mark_completed(record.id)
+        store.mark_delivery_pending(record.id)
+        expected.append(f"req-{index}")
+    unrelated = store.create_queued(
+        "other", session_key="gateway:other", channel="gateway", chat_id="other", content="x"
+    )
+    store.mark_delivery_pending(unrelated.id)
+    dispatcher = _history_dispatcher(manager)
+    dispatcher.request_store = store
+
+    async def scenario(server):
+        return await _request(server.port, "GET", "/api/sessions?key=gateway%3Adirect")
+
+    status, _headers, body = asyncio.run(_with_server(dispatcher, scenario))
+    deliveries = json.loads(body)["deliveries"]
+    assert status == 200
+    assert [item["request_id"] for item in deliveries] == list(reversed(expected[-20:]))
+    assert all(set(item) == {
+        "request_id", "status", "delivery_status", "delivery_error", "delivery_updated_at"
+    } for item in deliveries)
+
+
+def test_gateway_delivery_query_failure_preserves_session_history(tmp_path):
+    manager = SessionManager(tmp_path)
+    _save_session(
+        manager,
+        "gateway:direct",
+        "Gateway Direct",
+        [("user", "hello"), ("assistant", "answer")],
+    )
+    dispatcher = _history_dispatcher(manager)
+    dispatcher.request_store = SimpleNamespace(
+        list_recent_deliveries=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline"))
+    )
+
+    async def scenario(server):
+        return await _request(server.port, "GET", "/api/sessions?key=gateway%3Adirect")
+
+    status, _headers, body = asyncio.run(_with_server(dispatcher, scenario))
+    payload = json.loads(body)
+    assert status == 200
+    assert payload["messages"] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "answer"},
+    ]
+    assert payload["deliveries"] is None
 
 
 def test_gateway_reads_long_term_memory(tmp_path):

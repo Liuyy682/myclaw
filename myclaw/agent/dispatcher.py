@@ -444,14 +444,7 @@ class AgentDispatcher:
                             if self._active_session_tasks.get(msg.session_key) is current_task:
                                 del self._active_session_tasks[msg.session_key]
                         with self.observability.span("outbound.publish", "queue"):
-                            await self.bus.publish_outbound(
-                                OutboundMessage(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    content=content,
-                                    metadata=metadata,
-                                )
-                            )
+                            await self._publish_agent_response(msg, content, metadata)
                         logger.info("Agent request completed")
                     finally:
                         if acquired_slot:
@@ -750,6 +743,47 @@ class AgentDispatcher:
                 getattr(store, f"mark_{status}")(internal_id)
         except Exception:
             logger.exception("Failed to persist %s request %s", status, internal_id)
+
+    def _track_delivery(self, msg: InboundMessage) -> int | None:
+        """Mark a Gateway terminal response pending and attach its private ID."""
+
+        if msg.channel != "gateway" or not getattr(msg, "_request_persisted", False):
+            return None
+        internal_id = getattr(msg, "_request_internal_id", None)
+        if not isinstance(internal_id, int):
+            return None
+        try:
+            self.request_store.mark_delivery_pending(internal_id)
+        except Exception:
+            # Delivery bookkeeping must never prevent the answer from being sent.
+            logger.exception("Failed to mark request %s delivery pending", internal_id)
+        return internal_id
+
+    def _mark_delivery_failed(self, internal_id: int, error: str) -> None:
+        try:
+            self.request_store.mark_delivery_failed(internal_id, error)
+        except Exception:
+            logger.exception("Failed to mark request %s delivery failed", internal_id)
+
+    async def _publish_agent_response(
+        self, msg: InboundMessage, content: str, metadata: dict[str, Any]
+    ) -> None:
+        outbound = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=content,
+            metadata=metadata,
+        )
+        internal_id = self._track_delivery(msg)
+        if internal_id is not None:
+            # Private runtime-only field; _outbound_event deliberately ignores it.
+            outbound._request_internal_id = internal_id
+        try:
+            await self.bus.publish_outbound(outbound)
+        except Exception as exc:
+            if internal_id is not None:
+                self._mark_delivery_failed(internal_id, str(exc))
+            raise
 
     def _release_reserved_request(self, session_key: str, state: _SessionDispatchState | None) -> None:
         if state is None:

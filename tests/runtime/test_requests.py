@@ -77,6 +77,59 @@ def test_request_store_keeps_the_first_terminal_state(tmp_path):
     assert persisted.reason is None
 
 
+def test_request_store_migrates_delivery_columns_and_reconciles_pending(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    db = runtime / "requests.db"
+    connection = sqlite3.connect(db)
+    connection.execute(
+        """CREATE TABLE requests (
+            id INTEGER PRIMARY KEY, request_id TEXT NOT NULL, session_key TEXT NOT NULL,
+            channel TEXT NOT NULL, chat_id TEXT NOT NULL, content TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL,
+            error TEXT, metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO requests
+            (request_id, session_key, channel, chat_id, content, status, created_at, updated_at)
+            VALUES ('legacy', 'gateway:a', 'gateway', 'a', 'hello', 'completed', 'now', 'now')"""
+    )
+    connection.commit()
+    connection.close()
+
+    store = RequestStore(tmp_path)
+    columns = {
+        row[1] for row in sqlite3.connect(db).execute("PRAGMA table_info(requests)")
+    }
+    assert {"delivery_status", "delivery_error", "delivery_updated_at"} <= columns
+    legacy = store.get("legacy")
+    assert legacy.delivery_status is None
+
+    pending = store.create_queued(
+        "pending", session_key="gateway:a", channel="gateway", chat_id="a", content="pending"
+    )
+    store.mark_delivery_pending(pending.id)
+    assert store.mark_pending_deliveries_unknown() == 1
+    assert store.get(pending.id).delivery_status == "unknown"
+    assert store.get(pending.id).delivery_error is None
+
+
+def test_request_store_delivery_terminal_state_is_idempotent_and_sent_wins(tmp_path):
+    store = RequestStore(tmp_path)
+    record = store.create_queued(
+        "delivery", session_key="gateway:a", channel="gateway", chat_id="a", content="hello"
+    )
+    store.mark_delivery_pending(record.id)
+    store.mark_delivery_sent(record.id)
+    store.mark_delivery_sent(record.id)
+    store.mark_delivery_failed(record.id, "connection_error")
+    persisted = store.get(record.id)
+    assert persisted.delivery_status == "sent"
+    assert persisted.delivery_error is None
+
+
 class _TinyLoop:
     def __init__(self, workspace: Path):
         self.session_manager = SimpleNamespace(workspace=workspace)
@@ -140,6 +193,106 @@ def test_dispatcher_persists_queued_then_completes_and_runtime_recovers(tmp_path
     assert record is not None
     assert record.status == "completed"
     assert loop.calls == 1
+
+
+def test_dispatcher_marks_gateway_terminal_response_pending_and_keeps_id_private(tmp_path):
+    bus = MessageBus()
+    loop = _TinyLoop(tmp_path)
+    store = RequestStore(tmp_path)
+    dispatcher = AgentDispatcher(bus, loop, request_store=store)
+
+    async def scenario():
+        async with DispatcherRuntime(dispatcher, enable_mcp=False):
+            admission = await dispatcher.submit(InboundMessage(
+                channel="gateway", sender_id="u", chat_id="a", content="hello",
+                metadata={"request_id": "gateway-1"},
+            ))
+            outbound = await bus.consume_outbound()
+        return admission, outbound
+
+    admission, outbound = asyncio.run(scenario())
+    record = store.get("gateway-1")
+    assert admission.accepted and record.delivery_status == "pending"
+    assert outbound._request_internal_id == record.id
+    assert "_request_internal_id" not in outbound.metadata
+
+
+def test_dispatcher_does_not_track_cli_terminal_response(tmp_path):
+    bus = MessageBus()
+    loop = _TinyLoop(tmp_path)
+    store = RequestStore(tmp_path)
+    dispatcher = AgentDispatcher(bus, loop, request_store=store)
+
+    async def scenario():
+        async with DispatcherRuntime(dispatcher, enable_mcp=False):
+            await dispatcher.submit(InboundMessage(
+                channel="cli", sender_id="u", chat_id="a", content="hello",
+                metadata={"request_id": "cli-1"},
+            ))
+            return await bus.consume_outbound()
+
+    outbound = asyncio.run(scenario())
+    assert not hasattr(outbound, "_request_internal_id")
+    assert store.get("cli-1").delivery_status is None
+
+
+def test_dispatcher_tracks_gateway_error_reply_and_delivery_write_failure_is_non_blocking(tmp_path):
+    class ErrorLoop(_TinyLoop):
+        async def run(self, text, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                content="Error: agent failed", error="agent failed", stop_reason="error"
+            )
+
+    class DeliveryFailureStore(RequestStore):
+        def mark_delivery_pending(self, internal_id):
+            raise OSError("delivery database unavailable")
+
+    bus = MessageBus()
+    store = DeliveryFailureStore(tmp_path)
+    dispatcher = AgentDispatcher(bus, ErrorLoop(tmp_path), request_store=store)
+
+    async def scenario():
+        async with DispatcherRuntime(dispatcher, enable_mcp=False):
+            await dispatcher.submit(InboundMessage(
+                channel="gateway", sender_id="u", chat_id="a", content="hello",
+                metadata={"request_id": "gateway-error"},
+            ))
+            return await bus.consume_outbound()
+
+    outbound = asyncio.run(scenario())
+    record = store.get("gateway-error")
+    assert outbound.content == "Error: agent failed"
+    assert outbound._request_internal_id == record.id
+    assert record.status == "failed"
+    assert record.delivery_status is None
+
+
+def test_dispatcher_marks_delivery_failed_when_outbound_publish_fails(tmp_path):
+    class FailingBus(MessageBus):
+        async def publish_outbound(self, _msg):
+            raise OSError("queue unavailable")
+
+    store = RequestStore(tmp_path)
+    record = store.create_queued(
+        "publish-error", session_key="gateway:a", channel="gateway", chat_id="a", content="hello"
+    )
+    msg = InboundMessage(channel="gateway", sender_id="u", chat_id="a", content="hello")
+    msg._request_persisted = True
+    msg._request_internal_id = record.id
+    dispatcher = AgentDispatcher(FailingBus(), _TinyLoop(tmp_path), request_store=store)
+
+    async def scenario():
+        try:
+            await dispatcher._publish_agent_response(msg, "answer", {})
+        except OSError as exc:
+            return str(exc)
+        raise AssertionError("publish should fail")
+
+    assert asyncio.run(scenario()) == "queue unavailable"
+    persisted = store.get(record.id)
+    assert persisted.delivery_status == "failed"
+    assert persisted.delivery_error == "queue unavailable"
 
 
 def test_dispatcher_request_persistence_failure_releases_capacity_and_skips_agent(tmp_path):

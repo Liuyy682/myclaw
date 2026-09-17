@@ -53,6 +53,19 @@ class DispatcherRuntime:
                 # recovery is best-effort so a pre-existing runtime can still
                 # serve health and report the failure on the next request.
                 logger.exception("Failed to recover incomplete requests on startup")
+        recover_deliveries = getattr(request_store, "mark_pending_deliveries_unknown", None)
+        if callable(recover_deliveries):
+            try:
+                recovered_deliveries = recover_deliveries()
+                if recovered_deliveries:
+                    logger.warning(
+                        "Marked %d pending delivery record(s) unknown on startup",
+                        recovered_deliveries,
+                    )
+            except Exception:
+                # Delivery recovery is best-effort and must not prevent the
+                # runtime from serving requests.
+                logger.exception("Failed to recover pending deliveries on startup")
         registry = getattr(loop, "tool_registry", None)
         security_store = getattr(registry, "security_store", None)
         recover = getattr(security_store, "recover_incomplete_operations", None)

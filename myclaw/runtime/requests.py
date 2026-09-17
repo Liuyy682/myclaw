@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Durable records for user requests accepted by the dispatcher.
 
 This is intentionally a small, synchronous SQLite store.  Request admission
 is synchronous from the dispatcher's point of view, so a request is never
 placed on the in-memory bus before its ``queued`` row is durable.
 """
+
+from __future__ import annotations
 
 import json
 import sqlite3
@@ -28,9 +28,14 @@ CREATE TABLE IF NOT EXISTS requests (
     error TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    delivery_status TEXT,
+    delivery_error TEXT,
+    delivery_updated_at TEXT
 )
 """
+
+_DELIVERY_TERMINAL_STATES = {"sent", "failed", "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +52,9 @@ class RequestRecord:
     metadata: dict[str, Any]
     created_at: str
     updated_at: str
+    delivery_status: str | None
+    delivery_error: str | None
+    delivery_updated_at: str | None
 
     @property
     def reason(self) -> str | None:
@@ -68,6 +76,9 @@ class RequestRecord:
             "metadata": dict(self.metadata),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "delivery_status": self.delivery_status,
+            "delivery_error": self.delivery_error,
+            "delivery_updated_at": self.delivery_updated_at,
         }
 
 
@@ -88,6 +99,21 @@ class RequestStore:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(_TABLE_SCHEMA)
+            self._migrate_schema(connection)
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        for name, declaration in (
+            ("delivery_status", "TEXT"),
+            ("delivery_error", "TEXT"),
+            ("delivery_updated_at", "TEXT"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE requests ADD COLUMN {name} {declaration}")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
@@ -174,6 +200,62 @@ class RequestStore:
     def mark_interrupted(self, internal_id: int, error: str | None = None) -> RequestRecord:
         return self._transition(internal_id, "interrupted", error)
 
+    def _transition_delivery(
+        self, internal_id: int, status: str, error: str | None = None
+    ) -> RequestRecord:
+        if status not in {"pending", "sent", "failed", "unknown"}:
+            raise ValueError(f"invalid delivery status: {status}")
+        now = self._now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE requests
+                      SET delivery_status = ?, delivery_error = ?, delivery_updated_at = ?
+                    WHERE id = ?
+                      AND (delivery_status IS NULL OR delivery_status = 'pending')""",
+                (status, error, now, internal_id),
+            )
+            if cursor.rowcount == 0:
+                current = connection.execute(
+                    "SELECT delivery_status FROM requests WHERE id = ?", (internal_id,)
+                ).fetchone()
+                if current is None:
+                    raise KeyError(f"unknown request: {internal_id}")
+                if current["delivery_status"] not in _DELIVERY_TERMINAL_STATES:
+                    raise RuntimeError(f"invalid stored delivery status: {current['delivery_status']}")
+        record = self.get(internal_id)
+        if record is None:  # pragma: no cover - defensive against a broken adapter
+            raise KeyError(f"unknown request: {internal_id}")
+        return record
+
+    def mark_delivery_pending(self, internal_id: int) -> RequestRecord:
+        return self._transition_delivery(internal_id, "pending")
+
+    def mark_delivery_sent(self, internal_id: int) -> RequestRecord:
+        return self._transition_delivery(internal_id, "sent")
+
+    def mark_delivery_failed(self, internal_id: int, error: str | None = None) -> RequestRecord:
+        return self._transition_delivery(internal_id, "failed", error)
+
+    def mark_delivery_unknown(self, internal_id: int, error: str | None = None) -> RequestRecord:
+        return self._transition_delivery(internal_id, "unknown", error)
+
+    def mark_pending_deliveries_unknown(self) -> int:
+        """Reconcile deliveries left pending by a prior process."""
+
+        now = self._now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE requests
+                      SET delivery_status = 'unknown',
+                          delivery_error = NULL,
+                          delivery_updated_at = ?
+                    WHERE delivery_status = 'pending'""",
+                (now,),
+            )
+            return cursor.rowcount
+
+    recover_pending_deliveries = mark_pending_deliveries_unknown
+
     def mark_incomplete_interrupted(self) -> int:
         """Mark rows left queued/running by a prior process as interrupted."""
 
@@ -233,6 +315,19 @@ class RequestStore:
     def list_recent_interrupted(self, session_key: str, limit: int = 5) -> list[RequestRecord]:
         return self.list_recent(session_key, limit=limit, status="interrupted")
 
+    def list_recent_deliveries(self, session_key: str, limit: int = 20) -> list[RequestRecord]:
+        if limit < 1:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM requests
+                     WHERE session_key = ? AND delivery_status IS NOT NULL
+                     ORDER BY id DESC
+                     LIMIT ?""",
+                (session_key, limit),
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
     @staticmethod
     def _record(row: sqlite3.Row) -> RequestRecord:
         try:
@@ -254,4 +349,9 @@ class RequestStore:
             metadata=metadata,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            delivery_status=row["delivery_status"] if "delivery_status" in row.keys() else None,
+            delivery_error=row["delivery_error"] if "delivery_error" in row.keys() else None,
+            delivery_updated_at=(
+                row["delivery_updated_at"] if "delivery_updated_at" in row.keys() else None
+            ),
         )
